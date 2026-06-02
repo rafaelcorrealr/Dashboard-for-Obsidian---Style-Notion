@@ -6,6 +6,12 @@
 
 ---
 
+## [0.4.1] — alpha — 2026-06-02
+
+- **Descrição da tarefa no Todoist:**
+  - *Hover* numa tarefa (chip ou linha "Atrasadas") mostra um tooltip com o título completo + a descrição (preview rápido, cortado em ~700 caracteres). Tarefas com descrição ganham um ícone discreto (`align-left`)
+  - *Clicar* na tarefa abre um **modal** com a descrição renderizada em markdown — **links clicáveis** (abrem no navegador) — além de botões "Abrir no Todoist" e "✓ Concluir"
+
 ## [0.4.0] — alpha — 2026-06-02
 
 - **Todoist — escrita (Fase 8.2):** checkbox em cada tarefa (chips da semana + painel "Atrasadas") conclui a tarefa no Todoist real (`POST /api/v1/tasks/{id}/close`). Conclusão otimista (some na hora; reverte e avisa via Notice se a API falhar). Fecha o sync de duas vias — mexer na dashboard reflete no app

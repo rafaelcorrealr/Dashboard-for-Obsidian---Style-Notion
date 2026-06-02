@@ -1,4 +1,4 @@
-import { App, ItemView, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
+import { App, Component, ItemView, MarkdownRenderer, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
 
 const VIEW_TYPE = "werus-dashboard";
 
@@ -134,6 +134,12 @@ function dueKey(t: TodoistTask): string | null {
   const d = t.due?.date ?? t.due?.datetime;
   return d ? d.substring(0, 10) : null;
 }
+
+// A tarefa tem descrição (instruções)?
+function hasDesc(t: TodoistTask): boolean {
+  return !!t.description && t.description.trim().length > 0;
+}
+const DESC_MAX = 700;   // corte da descrição no tooltip (o resto fica no Todoist)
 
 // Função global exposta pelo plugin "Heatmap Calendar" (quando habilitado).
 type HeatmapEntry = { date: string; intensity?: number; color?: string; content?: string };
@@ -1268,6 +1274,26 @@ permissions:
     check.onclick = e => { e.stopPropagation(); void this.completeTask(t); };
   }
 
+  // Tooltip da tarefa: título completo + descrição (instruções), no hover.
+  private showTaskTip(target: HTMLElement, t: TodoistTask) {
+    this.hideTip();
+    const tip = document.body.createDiv({ cls: "wd-tooltip wd-task-tip" });
+    const head = tip.createDiv({ cls: "wd-task-tip-head" });
+    head.createSpan({ cls: "wd-task-tip-pri" }).style.background = priMeta(t.priority).color;
+    head.createSpan({ cls: "wd-task-tip-title", text: t.content });
+    if (hasDesc(t)) {
+      const d = t.description!.trim();
+      tip.createDiv({ cls: "wd-task-tip-desc", text: d.length > DESC_MAX ? d.slice(0, DESC_MAX) + "…" : d });
+    }
+    this.tip = tip;
+    this.positionTip(tip, target);
+  }
+
+  private attachTaskTip(el: HTMLElement, t: TodoistTask) {
+    el.addEventListener("mouseenter", () => this.showTaskTip(el, t));
+    el.addEventListener("mouseleave", () => this.hideTip());
+  }
+
   // Chip compacto de tarefa (na grade semanal).
   private todoChip(col: HTMLElement, t: TodoistTask) {
     const pri = priMeta(t.priority);
@@ -1276,8 +1302,9 @@ permissions:
     this.todoCheck(chip, t);
     if (t.due?.is_recurring) chip.createSpan({ cls: "wd-todo-recur", text: "⟳" });
     chip.createSpan({ cls: "wd-todo-chip-txt", text: t.content });
-    chip.setAttr("title", `${pri.label} · ${t.content}`);
-    chip.onclick = () => window.open(taskUrl(t), "_blank");
+    if (hasDesc(t)) setIcon(chip.createSpan({ cls: "wd-todo-hasdesc" }), "align-left");
+    chip.onclick = () => this.openTaskModal(t);
+    this.attachTaskTip(chip, t);
   }
 
   // Linha de tarefa (no painel de atrasadas).
@@ -1289,14 +1316,21 @@ permissions:
     const tag = row.createSpan({ cls: "wd-todo-pri", text: pri.label });
     tag.style.background = pri.color;
     row.createSpan({ cls: "wd-todo-row-txt", text: t.content });
+    if (hasDesc(t)) setIcon(row.createSpan({ cls: "wd-todo-hasdesc" }), "align-left");
     const dk = dueKey(t);
     if (dk) {
       const [, m, d] = dk.split("-");
       row.createSpan({ cls: "wd-todo-row-date", text: `${d}/${m}` });
     }
     if (t.due?.is_recurring) row.createSpan({ cls: "wd-todo-recur", text: "⟳" });
-    row.setAttr("title", "Abrir no Todoist");
-    row.onclick = () => window.open(taskUrl(t), "_blank");
+    row.onclick = () => this.openTaskModal(t);
+    this.attachTaskTip(row, t);
+  }
+
+  // Abre o modal de detalhes da tarefa (descrição com links clicáveis).
+  private openTaskModal(t: TodoistTask) {
+    this.hideTip();
+    new TaskModal(this.app, t, this, () => void this.completeTask(t)).open();
   }
 
   // Conclui a tarefa de forma otimista: remove da lista e re-renderiza; se a API
@@ -1409,6 +1443,39 @@ export default class WerusDashboard extends Plugin {
   }
 
   onunload() {}
+}
+
+// ── Modal de detalhes da tarefa (descrição com links clicáveis) ──────────────
+
+class TaskModal extends Modal {
+  constructor(
+    app: App,
+    private task: TodoistTask,
+    private component: Component,
+    private onComplete: () => void,
+  ) { super(app); }
+
+  onOpen() {
+    const { contentEl, titleEl, modalEl } = this;
+    modalEl.addClass("wd-task-modal");
+    titleEl.setText(this.task.content);
+
+    if (hasDesc(this.task)) {
+      const body = contentEl.createDiv({ cls: "wd-task-modal-desc markdown-rendered" });
+      // Renderiza a descrição como markdown → links clicáveis (abrem no navegador).
+      void MarkdownRenderer.render(this.app, this.task.description!.trim(), body, "", this.component);
+    } else {
+      contentEl.createEl("p", { cls: "wd-task-modal-empty", text: "Esta tarefa não tem descrição." });
+    }
+
+    const actions = contentEl.createDiv({ cls: "wd-task-modal-actions" });
+    const open = actions.createEl("button", { text: "Abrir no Todoist" });
+    open.onclick = () => window.open(taskUrl(this.task), "_blank");
+    const done = actions.createEl("button", { text: "✓ Concluir", cls: "mod-cta" });
+    done.onclick = () => { this.onComplete(); this.close(); };
+  }
+
+  onClose() { this.contentEl.empty(); }
 }
 
 // ── Aba de configurações ────────────────────────────────────────────────────
