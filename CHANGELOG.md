@@ -6,6 +6,18 @@
 
 ---
 
+## [0.4.0] — alpha — 2026-06-02
+
+- **Todoist — escrita (Fase 8.2):** checkbox em cada tarefa (chips da semana + painel "Atrasadas") conclui a tarefa no Todoist real (`POST /api/v1/tasks/{id}/close`). Conclusão otimista (some na hora; reverte e avisa via Notice se a API falhar). Fecha o sync de duas vias — mexer na dashboard reflete no app
+- **Aviso de urgência (Fase 10):** lê a propriedade `urgency` (`baixa`/`media`/`alta`) das notas
+  - Ícone de aviso (`triangle-alert`) no card da pasta que contém notas urgentes; propaga em qualquer nível (usa a maior urgência da subárvore). Canto superior direito nos cards de topo (esquerda nas subpastas, onde o status ocupa a direita)
+  - Hover no ícone → tooltip listando quais arquivos estão urgentes + o nível
+  - Ao navegar, a nota urgente é marcada com o mesmo ícone, cor por nível (alta = vermelho com glow/pulse · media = laranja · baixa = amarelo)
+  - Pasta **oculta** que contém notas urgentes: o chip na barra "ocultos" fica contornado pela cor do nível (glow/pulse na alta) — dá pra ver a urgência mesmo sem o card visível
+- **Capa padrão nas subpastas (Fase 9.1):** subpastas sem `cover` ganham capa padrão (gradiente + ícone) em versão menor/sutil que as pastas de topo
+- **Cards de arquivo por tipo (Fase 9.2):** o cofre passa a mostrar também `.canvas` e `.base` (antes só `.md`); cada arquivo ganha capa/ícone padrão por tipo (nota → documento azul, canvas → roxo, base → teal), menores que os cards de pasta
+- Refactor: tooltip de posicionamento extraído para `positionTip`; `notesIn` → `filesIn` (inclui canvas/base)
+
 ## [0.3.0] — alpha — 2026-06-01
 
 - **Integração Todoist (Fase 8.1 — leitura):** nova seção "TAREFAS" que puxa as tarefas via API unificada v1 do Todoist (`/api/v1/tasks`, paginada por `next_cursor`; a REST v2 foi aposentada e respondia 410)

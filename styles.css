@@ -1121,6 +1121,25 @@
 }
 .wd-todo-recur { color: #777; font-size: 9px; flex-shrink: 0; }
 
+/* Checkbox de conclusão (Fase 8.2) */
+.wd-todo-check {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  border: 1.5px solid var(--pri, #6B7280);
+  flex-shrink: 0;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  line-height: 1;
+  transition: background 0.15s;
+}
+.wd-todo-check:hover { background: var(--pri, #10B981); }
+.wd-todo-check:hover::after { content: "✓"; font-size: 9px; color: #fff; }
+.wd-todo-row .wd-todo-check { width: 15px; height: 15px; }
+.wd-todo-row .wd-todo-check:hover::after { font-size: 10px; }
+
 .wd-todo-emptyweek { margin-top: 8px; }
 
 /* Painel de atrasadas */
@@ -1177,3 +1196,97 @@
 
 .wd-compact .wd-todo-col { min-height: 64px; padding: 6px 4px; }
 .wd-compact .wd-todo-chip { font-size: 8px; }
+
+/* ── Fase 9.1 — Capa padrão sutil nas subpastas ───────────────────────────── */
+.wd-cover-sub { height: 64px; }
+.wd-cover-sub .wd-cover-glyph { font-size: 24px; opacity: 0.8; }
+.wd-cover-sub .wd-cover-glyph svg { width: 24px; height: 24px; }
+.wd-compact .wd-cover-sub { height: 48px; }
+
+/* ── Fase 9.2 — Cards/linhas de arquivo por tipo (nota / canvas / base) ────── */
+.wd-file-md     { --fc: #6366F1; }
+.wd-file-canvas { --fc: #8B5CF6; }
+.wd-file-base   { --fc: #14B8A6; }
+
+/* Capa por tipo no card (modo colunas) */
+.wd-note-cover {
+  height: 42px;
+  margin: -10px -11px 8px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 8px 8px 0 0;
+  background:
+    radial-gradient(circle at 70% 30%, color-mix(in srgb, var(--fc, #6366F1) 26%, transparent), transparent 70%),
+    linear-gradient(135deg, color-mix(in srgb, var(--fc, #6366F1) 18%, #0D0D13), #0D0D13);
+}
+.wd-note-cover-glyph {
+  display: inline-flex;
+  color: color-mix(in srgb, var(--fc, #6366F1) 75%, transparent);
+}
+.wd-note-cover-glyph svg { width: 18px; height: 18px; }
+
+/* Ícone de tipo no modo lista */
+.wd-note-typeicon { display: inline-flex; flex-shrink: 0; color: var(--fc, #555); }
+.wd-note-typeicon svg { width: 14px; height: 14px; }
+
+.wd-compact .wd-note-cover { height: 32px; }
+.wd-compact .wd-note-cover-glyph svg { width: 15px; height: 15px; }
+
+/* ── Fase 10 — Aviso de urgência ──────────────────────────────────────────── */
+/* Cores por nível */
+.wd-u-alta  { color: #EF4444; }
+.wd-u-media { color: #F59E0B; }
+.wd-u-baixa { color: #EAB308; }
+
+/* Badge no card de pasta — canto superior direito (o botão de ocultar fica à esquerda) */
+.wd-urgency-badge {
+  position: absolute;
+  top: 7px;
+  right: 7px;
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(8, 8, 14, 0.6);
+  backdrop-filter: blur(2px);
+  cursor: help;
+}
+/* Nas subpastas o badge de status ocupa a direita → o aviso vai para a esquerda */
+.wd-sub-card .wd-urgency-badge { right: auto; left: 7px; }
+.wd-urgency-badge svg { width: 14px; height: 14px; }
+.wd-urgency-badge.wd-u-alta {
+  filter: drop-shadow(0 0 3px #EF4444);
+  animation: wd-urg-pulse 1.5s ease-in-out infinite;
+}
+.wd-urgency-badge.wd-u-media { filter: drop-shadow(0 0 2px rgba(245, 158, 11, 0.6)); }
+
+@keyframes wd-urg-pulse {
+  0%, 100% { filter: drop-shadow(0 0 2px #EF4444); }
+  50%      { filter: drop-shadow(0 0 8px #EF4444); }
+}
+
+/* Marca de urgência na própria nota (lista/colunas) */
+.wd-urgency-mark { display: inline-flex; flex-shrink: 0; }
+.wd-urgency-mark svg { width: 13px; height: 13px; }
+.wd-urgency-mark.wd-u-alta { filter: drop-shadow(0 0 4px #EF4444); animation: wd-urg-pulse 1.5s ease-in-out infinite; }
+.wd-note-list .wd-urgency-mark { margin-left: auto; }
+.wd-note-card .wd-urgency-mark { position: absolute; top: 7px; left: 7px; z-index: 3; }
+
+/* Dot de nível no tooltip de urgência */
+.wd-utip-dot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; margin-right: 7px; }
+.wd-urgency-tip .wd-tip-row { justify-content: flex-start; }
+.wd-urgency-tip .wd-tip-date { margin-left: auto; text-transform: uppercase; }
+
+/* Chip de pasta oculta que contém notas urgentes: contorno pela cor do nível */
+.wd-hidden-chip.wd-hidden-urgent {
+  border-width: 1.5px;
+  color: #C8C8D8;
+}
+.wd-hidden-chip.wd-hidden-urgent.wd-u-alta {
+  box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
+  animation: wd-urg-pulse 1.6s ease-in-out infinite;
+}

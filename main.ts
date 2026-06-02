@@ -1,4 +1,4 @@
-import { App, ItemView, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
+import { App, ItemView, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
 
 const VIEW_TYPE = "werus-dashboard";
 
@@ -115,6 +115,18 @@ async function fetchTodoistTasks(token: string): Promise<TodoistTask[]> {
 // URL para abrir a tarefa no Todoist (usa a do payload ou monta a partir do id).
 function taskUrl(t: TodoistTask): string {
   return t.url ?? `https://app.todoist.com/app/task/${t.id}`;
+}
+
+// Conclui (fecha) uma tarefa no Todoist. POST sem corpo; 204 = sucesso. Fase 8.2.
+async function closeTodoistTask(token: string, id: string): Promise<void> {
+  const res = await requestUrl({
+    url: `https://api.todoist.com/api/v1/tasks/${id}/close`,
+    method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    throw: false,
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("token inválido (401/403)");
+  if (res.status !== 204 && res.status !== 200) throw new Error(`HTTP ${res.status}`);
 }
 
 // Data de vencimento (YYYY-MM-DD) de uma tarefa, ou null se sem due.
@@ -243,12 +255,6 @@ function subFolders(folder: TFolder): TFolder[] {
     .sort((a, b) => a.name.localeCompare(b.name, "pt"));
 }
 
-function notesIn(folder: TFolder): TFile[] {
-  return (folder.children.filter(
-    c => c instanceof TFile && c.extension === "md" && c.name !== "status.md"
-  ) as TFile[]).sort((a, b) => a.basename.localeCompare(b.basename, "pt"));
-}
-
 function coverInFolder(app: App, folder: TFolder): string | null {
   // 1. Campo cover: no status.md (aceita caminho direto ou wikilink [[...]])
   const sf = folder.children.find(c => c instanceof TFile && c.name === "status.md") as TFile | undefined;
@@ -278,6 +284,50 @@ function readFolderStatus(app: App, folder: TFolder): Status {
 function readNoteStatus(app: App, file: TFile): Status {
   const s = app.metadataCache.getCache(file.path)?.frontmatter?.status;
   return s === "paused" || s === "cancelled" ? s : "progress";
+}
+
+// ── Urgência (propriedade `urgency`) ──────────────────────────────────────────
+type Urgency = "alta" | "media" | "baixa";
+const URGENCY_RANK: Record<Urgency, number> = { baixa: 1, media: 2, alta: 3 };
+const URGENCY_COLOR: Record<Urgency, string> = { alta: "#EF4444", media: "#F59E0B", baixa: "#EAB308" };
+
+function readNoteUrgency(app: App, file: TFile): Urgency | null {
+  const u = app.metadataCache.getCache(file.path)?.frontmatter?.urgency;
+  return u === "alta" || u === "media" || u === "baixa" ? u : null;
+}
+
+type UrgencyInfo = { items: { file: TFile; level: Urgency }[]; max: Urgency | null };
+
+// Notas com `urgency` em toda a subárvore + o nível máximo (ordenadas por nível desc).
+function urgencyStats(app: App, folder: TFolder): UrgencyInfo {
+  const items: { file: TFile; level: Urgency }[] = [];
+  const walk = (f: TFolder) => {
+    for (const c of f.children) {
+      if (c instanceof TFile && c.extension === "md" && c.name !== "status.md") {
+        const u = readNoteUrgency(app, c);
+        if (u) items.push({ file: c, level: u });
+      } else if (c instanceof TFolder) walk(c);
+    }
+  };
+  walk(folder);
+  let max: Urgency | null = null;
+  for (const it of items) if (!max || URGENCY_RANK[it.level] > URGENCY_RANK[max]) max = it.level;
+  items.sort((a, b) => URGENCY_RANK[b.level] - URGENCY_RANK[a.level]);
+  return { items, max };
+}
+
+// ── Arquivos exibíveis: nota (.md) / canvas (.canvas) / base (.base) ──────────
+const FILE_EXTS = ["md", "canvas", "base"];
+// id Lucide por tipo de arquivo.
+function fileGlyph(ext: string): string {
+  if (ext === "canvas") return "shapes";
+  if (ext === "base") return "table-2";
+  return "file-text";
+}
+function filesIn(folder: TFolder): TFile[] {
+  return (folder.children.filter(
+    c => c instanceof TFile && FILE_EXTS.includes(c.extension) && c.name !== "status.md"
+  ) as TFile[]).sort((a, b) => a.basename.localeCompare(b.basename, "pt"));
 }
 
 // Ícone definido em `icon:` no status.md da pasta (emoji ou id Lucide). null se ausente.
@@ -454,9 +504,19 @@ class DashboardView extends ItemView {
     bar.createSpan({ cls: "wd-hidden-label", text: "ocultos:" });
     for (const key of hidden) {
       const chip = bar.createSpan({ cls: "wd-hidden-chip" });
+      // Pasta oculta com notas urgentes → contorno pela cor do nível máximo.
+      const f = this.app.vault.getAbstractFileByPath(key);
+      const urg = f instanceof TFolder ? urgencyStats(this.app, f) : { items: [], max: null };
+      if (urg.max) {
+        chip.addClass("wd-hidden-urgent");
+        chip.addClass(`wd-u-${urg.max}`);
+        chip.style.borderColor = URGENCY_COLOR[urg.max];
+      }
       setIcon(chip.createSpan({ cls: "wd-chip-icon" }), "eye");
       chip.createSpan({ text: this.hiddenLabel(key) });
-      chip.setAttr("title", "Mostrar novamente");
+      chip.setAttr("title", urg.max
+        ? `Mostrar novamente — ${urg.items.length} nota(s) urgente(s)`
+        : "Mostrar novamente");
       chip.onclick = () => this.unhideItem(key);
     }
   }
@@ -472,6 +532,12 @@ class DashboardView extends ItemView {
       row.createSpan({ cls: "wd-tip-name", text: f.basename });
       row.createSpan({ cls: "wd-tip-date", text: fmtShort(f.stat.mtime) });
     }
+    this.tip = tip;
+    this.positionTip(tip, target);
+  }
+
+  // Posiciona um tooltip fixo abaixo do alvo (vira para cima se faltar espaço).
+  private positionTip(tip: HTMLElement, target: HTMLElement) {
     const rect = target.getBoundingClientRect();
     const tw = tip.offsetWidth, th = tip.offsetHeight;
     let left = rect.left;
@@ -480,7 +546,32 @@ class DashboardView extends ItemView {
     if (top + th > window.innerHeight - 8) top = rect.top - th - 6;  // vira para cima se faltar espaço
     tip.style.left = `${Math.max(8, left)}px`;
     tip.style.top  = `${Math.max(8, top)}px`;
+  }
+
+  // Tooltip listando as notas urgentes de uma pasta (hover no badge de aviso).
+  private showUrgencyTip(target: HTMLElement, items: { file: TFile; level: Urgency }[]) {
+    this.hideTip();
+    const tip = document.body.createDiv({ cls: "wd-tooltip wd-urgency-tip" });
+    tip.createDiv({ cls: "wd-tip-title", text: "Urgente" });
+    for (const it of items) {
+      const row = tip.createDiv({ cls: "wd-tip-row" });
+      const dot = row.createSpan({ cls: "wd-utip-dot" });
+      dot.style.background = URGENCY_COLOR[it.level];
+      row.createSpan({ cls: "wd-tip-name", text: it.file.basename });
+      row.createSpan({ cls: "wd-tip-date", text: it.level });
+    }
     this.tip = tip;
+    this.positionTip(tip, target);
+  }
+
+  // Badge de aviso (triângulo) no card de pasta que contém notas com `urgency`.
+  // Cor pelo nível máximo; hover lista os arquivos. Fase 10.
+  private urgencyBadge(card: HTMLElement, urg: UrgencyInfo) {
+    if (!urg.max) return;
+    const b = card.createSpan({ cls: `wd-urgency-badge wd-u-${urg.max}` });
+    setIcon(b, "triangle-alert");
+    b.addEventListener("mouseenter", () => this.showUrgencyTip(b, urg.items));
+    b.addEventListener("mouseleave", () => this.hideTip());
   }
 
   private hideTip() {
@@ -623,7 +714,7 @@ permissions:
       const meta    = folderMeta(this.app, folder);
       const stats   = folderStats(folder);
       const cover   = coverInFolder(this.app, folder);
-      const navigable = subFolders(folder).length > 0 || notesIn(folder).length > 0;
+      const navigable = subFolders(folder).length > 0 || filesIn(folder).length > 0;
       const isActive = activeRoot === folder.path;
 
       const card = grid.createDiv({ cls: "wd-card wd-para-card wd-anim-in" + (isActive ? " wd-active" : "") });
@@ -640,6 +731,7 @@ permissions:
       card.createDiv({ cls: "wd-accent-bar" }).style.background = meta.accent;
 
       this.hideBtn(card, folder.path, `Ocultar "${meta.label}"`);
+      this.urgencyBadge(card, urgencyStats(this.app, folder));
 
       const body = card.createDiv({ cls: "wd-card-body" });
       const top  = body.createDiv({ cls: "wd-card-top" });
@@ -668,7 +760,7 @@ permissions:
     if (!idx) sec.createDiv({ cls: "wd-empty", text: "Nenhuma pasta visível." });
 
     // Arquivos soltos na raiz do cofre
-    const rootFiles = notesIn(vaultRoot);
+    const rootFiles = filesIn(vaultRoot);
     this.renderNotes(sec, rootFiles, "arquivos na raiz");
 
     if (this.navPath) {
@@ -744,9 +836,16 @@ permissions:
 
         const card = sgrid.createDiv({ cls: `wd-card wd-sub-card wd-s-${status}` });
         card.style.setProperty("--accent", meta.accent);
-        if (cover) card.createDiv({ cls: "wd-cover" }).createEl("img", { attr: { src: cover, draggable: "false" } });
+        if (cover) {
+          card.createDiv({ cls: "wd-cover" }).createEl("img", { attr: { src: cover, draggable: "false" } });
+        } else {
+          // Capa padrão sutil (versão menor que as pastas de topo) — Fase 9.1
+          const dc = card.createDiv({ cls: "wd-cover wd-cover-default wd-cover-sub" });
+          renderIcon(dc.createSpan({ cls: "wd-cover-glyph" }), customIcon ?? "📁");
+        }
 
         card.createDiv({ cls: `wd-badge wd-badge-${status}`, text: STATUS_ICON[status] });
+        this.urgencyBadge(card, urgencyStats(this.app, sf));
 
         const body = card.createDiv({ cls: "wd-card-body" });
         const top  = body.createDiv({ cls: "wd-card-top" });
@@ -776,8 +875,8 @@ permissions:
       }
     }
 
-    // Notas da pasta atual
-    const notes = notesIn(folder);
+    // Arquivos da pasta atual (notas, canvas, bases)
+    const notes = filesIn(folder);
     this.renderNotes(panel, notes);
 
     if (!subs.length && !notes.length)
@@ -960,10 +1059,19 @@ permissions:
     if (isGrid) {
       const grid = parent.createDiv({ cls: "wd-notes-grid" });
       for (const f of filtered) {
-        const st = readNoteStatus(this.app, f);
-        const rv = this.app.metadataCache.getCache(f.path)?.frontmatter?.reviewed === true;
+        const isMd = f.extension === "md";
+        const st = isMd ? readNoteStatus(this.app, f) : "progress";
+        const rv = isMd && this.app.metadataCache.getCache(f.path)?.frontmatter?.reviewed === true;
+        const urg = isMd ? readNoteUrgency(this.app, f) : null;
+
         const card = grid.createDiv({ cls: `wd-note-card wd-s-${st}` });
-        card.createDiv({ cls: "wd-note-rv " + (rv ? "wd-rv-yes" : "wd-rv-no") }).setAttr("title", rv ? "Revisada" : "Não revisada");
+        // Capa padrão por tipo de arquivo (nota / canvas / base) — Fase 9.2
+        const cov = card.createDiv({ cls: `wd-note-cover wd-file-${f.extension}` });
+        setIcon(cov.createSpan({ cls: "wd-note-cover-glyph" }), fileGlyph(f.extension));
+
+        if (isMd) card.createDiv({ cls: "wd-note-rv " + (rv ? "wd-rv-yes" : "wd-rv-no") }).setAttr("title", rv ? "Revisada" : "Não revisada");
+        if (urg) { const w = card.createSpan({ cls: `wd-urgency-mark wd-u-${urg}` }); setIcon(w, "triangle-alert"); w.setAttr("title", `Urgência: ${urg}`); }
+
         const name = card.createDiv({ cls: "wd-note-card-name", text: f.basename });
         if (st === "cancelled") name.addClass("wd-strike");
         card.createDiv({ cls: "wd-note-card-date", text: fmtShort(f.stat.mtime) });
@@ -972,13 +1080,20 @@ permissions:
     } else {
       const list = parent.createDiv({ cls: "wd-note-list" });
       for (const f of filtered) {
-        const st = readNoteStatus(this.app, f);
-        const rv = this.app.metadataCache.getCache(f.path)?.frontmatter?.reviewed === true;
+        const isMd = f.extension === "md";
+        const st = isMd ? readNoteStatus(this.app, f) : "progress";
+        const rv = isMd && this.app.metadataCache.getCache(f.path)?.frontmatter?.reviewed === true;
+        const urg = isMd ? readNoteUrgency(this.app, f) : null;
+
         const row = list.createDiv({ cls: `wd-note-row wd-s-${st}` });
-        row.createSpan({ cls: `wd-note-dot wd-badge-${st}` });
+        const ti = row.createSpan({ cls: `wd-note-typeicon wd-file-${f.extension}` });
+        setIcon(ti, fileGlyph(f.extension));
+        if (isMd) row.createSpan({ cls: `wd-note-dot wd-badge-${st}` });
+
         const name = row.createSpan({ cls: "wd-note-name", text: f.basename });
         if (st === "cancelled") name.addClass("wd-strike");
-        row.createSpan({ cls: "wd-note-rv " + (rv ? "wd-rv-yes" : "wd-rv-no") }).setAttr("title", rv ? "Revisada" : "Não revisada");
+        if (urg) { const w = row.createSpan({ cls: `wd-urgency-mark wd-u-${urg}` }); setIcon(w, "triangle-alert"); w.setAttr("title", `Urgência: ${urg}`); }
+        if (isMd) row.createSpan({ cls: "wd-note-rv " + (rv ? "wd-rv-yes" : "wd-rv-no") }).setAttr("title", rv ? "Revisada" : "Não revisada");
         if (st !== "cancelled") row.onclick = () => this.app.workspace.getLeaf(false).openFile(f);
       }
     }
@@ -1146,11 +1261,19 @@ permissions:
     }
   }
 
+  // Checkbox de conclusão (Fase 8.2) — conclui no Todoist real ao clicar.
+  private todoCheck(host: HTMLElement, t: TodoistTask) {
+    const check = host.createSpan({ cls: "wd-todo-check" });
+    check.setAttr("title", "Concluir tarefa");
+    check.onclick = e => { e.stopPropagation(); void this.completeTask(t); };
+  }
+
   // Chip compacto de tarefa (na grade semanal).
   private todoChip(col: HTMLElement, t: TodoistTask) {
     const pri = priMeta(t.priority);
     const chip = col.createDiv({ cls: "wd-todo-chip" });
     chip.style.setProperty("--pri", pri.color);
+    this.todoCheck(chip, t);
     if (t.due?.is_recurring) chip.createSpan({ cls: "wd-todo-recur", text: "⟳" });
     chip.createSpan({ cls: "wd-todo-chip-txt", text: t.content });
     chip.setAttr("title", `${pri.label} · ${t.content}`);
@@ -1161,6 +1284,8 @@ permissions:
   private todoRow(list: HTMLElement, t: TodoistTask) {
     const pri = priMeta(t.priority);
     const row = list.createDiv({ cls: "wd-todo-row" });
+    row.style.setProperty("--pri", pri.color);
+    this.todoCheck(row, t);
     const tag = row.createSpan({ cls: "wd-todo-pri", text: pri.label });
     tag.style.background = pri.color;
     row.createSpan({ cls: "wd-todo-row-txt", text: t.content });
@@ -1172,6 +1297,24 @@ permissions:
     if (t.due?.is_recurring) row.createSpan({ cls: "wd-todo-recur", text: "⟳" });
     row.setAttr("title", "Abrir no Todoist");
     row.onclick = () => window.open(taskUrl(t), "_blank");
+  }
+
+  // Conclui a tarefa de forma otimista: remove da lista e re-renderiza; se a API
+  // falhar, restaura e avisa. A escrita reflete no Todoist real (Fase 8.2).
+  private async completeTask(t: TodoistTask) {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) return;
+    const idx = this.todoistTasks.findIndex(x => x.id === t.id);
+    if (idx >= 0) this.todoistTasks.splice(idx, 1);
+    this.render();
+    try {
+      await closeTodoistTask(token, t.id);
+      new Notice(`✓ Concluída: ${t.content}`);
+    } catch (e) {
+      if (idx >= 0) this.todoistTasks.splice(idx, 0, t);   // reverte
+      new Notice(`Falha ao concluir: ${e instanceof Error ? e.message : String(e)}`);
+      this.render();
+    }
   }
 
   // Busca tarefas; `manual` mostra o spinner imediatamente.
