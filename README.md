@@ -1,9 +1,9 @@
 # Werus Dashboard
 
-Plugin Obsidian pessoal para o Second Brain. Exibe um dashboard com cards por pasta, estatísticas do cofre, calendário semanal, gráficos de atividade e navegador inline de notas.
+Plugin Obsidian pessoal para o Second Brain. Exibe um dashboard com cards por pasta, estatísticas do cofre, calendário semanal, integração com o Todoist, avisos de urgência, gráficos de atividade e navegador inline de notas.
 
-> ⚠️ **Alpha** — desenvolvimento pessoal, não publicado. A primeira versão pública será `1.0.0`.
-> Compatível com Obsidian ≥ 1.5.0 (desktop only).
+> ⚠️ **Alpha** — desenvolvimento pessoal. Publicado no GitHub; a primeira versão estável será `1.0.0`.
+> Compatível com Obsidian ≥ 1.5.0, **desktop e mobile** (Android testado). Em telas estreitas o layout é responsivo.
 
 ---
 
@@ -28,10 +28,27 @@ Plugin Obsidian pessoal para o Second Brain. Exibe um dashboard com cards por pa
 |---|---|
 | `stats` | Total de notas, % revisadas, criadas na semana, breakdown por pasta |
 | `para` | Cards do cofre + navegador inline |
+| `todoist` | Tarefas do Todoist: grade da semana + painel "Atrasadas" (ler e concluir) |
 | `heatmap` | Atividade do cofre via plugin Heatmap Calendar |
 | `growth` | Notas criadas/dia nos últimos 30 dias; modo cumulativo disponível |
 | `reports` | Últimos 6 relatórios Claude de `40.Archive/Relatórios Claude/` |
 | `calendar` | Calendário semanal navegável com notas do dia |
+
+### Integração Todoist
+- Grade da semana atual com as tarefas, **chips coloridos por prioridade** (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4) + painel "Atrasadas" recolhível
+- **Concluir tarefa** pela checkbox (sync de duas vias: fecha no Todoist real via API) — conclusão otimista, reverte se a API falhar
+- *Hover* mostra tooltip com a descrição; *clicar* abre modal com a descrição em markdown (links clicáveis) + botões "Abrir no Todoist" e "✓ Concluir"
+- Indicador `⟳` para tarefas recorrentes; botão `↻` de refresh manual
+- Requer o token pessoal do Todoist nas configurações do plugin (salvo em `data.json`, fora do Git)
+
+### Aviso de urgência
+- Notas com frontmatter `urgency: baixa | media | alta` acendem um ícone de aviso (`triangle-alert`) no card da pasta que as contém (propaga em qualquer nível, usa a maior urgência da subárvore)
+- Cor por nível: alta = vermelho com glow/pulse · media = laranja · baixa = amarelo
+- *Hover* no ícone lista quais arquivos estão urgentes; ao navegar, cada nota urgente é marcada
+
+### Mobile (Android)
+- O plugin carrega no Obsidian Mobile (`isDesktopOnly: false`). Layout responsivo em telas estreitas
+- Instalação automática: o Syncthing já leva o cofre + `main.js` pro aparelho; basta habilitar o plugin no app
 
 ---
 
@@ -66,6 +83,17 @@ reviewed: true   # ou false (padrão quando ausente)
 
 - `true` → dot verde no dashboard
 - `false` / ausente → dot escuro; contado como "pendente" no filtro
+
+### `urgency`
+Campo de frontmatter opcional em qualquer nota `.md`:
+
+```yaml
+---
+urgency: alta   # baixa | media | alta
+---
+```
+
+Acende o ícone de aviso no card da pasta (cor pelo nível). Ausente → sem aviso.
 
 ### Imagem de capa (fallback)
 Se o `status.md` não tiver `cover:`, o plugin procura um arquivo chamado `_cover` (qualquer extensão de imagem: `.png`, `.jpg`, `.webp`, `.gif`, `.svg`) na pasta. Se também não houver `_cover`, os cards do topo (PARA) recebem uma capa padrão: gradiente da cor de acento com o ícone da pasta como marca d'água.
@@ -115,6 +143,7 @@ npx tsc --noEmit
 | `compact` | `boolean` | Modo compacto ativado |
 | `hidden` | `string[]` | Pastas e seções ocultas |
 | `noteView` | `"list" \| "grid"` | Visualização padrão das notas |
+| `todoistToken` | `string` | Token pessoal da API do Todoist (fora do Git) |
 
 ---
 
@@ -123,12 +152,17 @@ npx tsc --noEmit
 ```
 main.ts
 ├── reviewedStats()       — conta reviewed:true vs total em subárvore
-├── folderStats()         — conta md e imagens em subárvore
+├── folderStats()         — conta arquivos e imagens em subárvore
+├── filesIn()             — lista .md/.canvas/.base de uma pasta
+├── urgencyStats()        — varre a subárvore e devolve notas urgentes + nível máx
 ├── coverInFolder()       — resolve cover: do status.md ou _cover.*
+├── fetchTodoistTasks()   — GET /api/v1/tasks (paginado), Bearer token
+├── closeTodoistTask()    — POST /api/v1/tasks/{id}/close (Fase 8.2)
 ├── renderStats()         — painel de estatísticas
-├── renderPara()          — grid de cards + navegador inline
+├── renderPara()          — grid de cards + navegador inline (+ badge de urgência)
 ├── renderBrowser()       — painel de navegação aninhada
 ├── renderNotes()         — lista/grid de notas com toggle e filtros
+├── renderTodoist()       — grade semanal + "Atrasadas" (ler/concluir tarefas)
 ├── renderGrowth()        — gráfico de crescimento (dia/total)
 ├── renderHeatmap()       — heatmap via plugin heatmap-calendar
 ├── renderReports()       — lista de relatórios Claude
@@ -139,5 +173,5 @@ main.ts
 
 ## Versão atual
 
-**v0.2.4 (alpha)** — ver [CHANGELOG](CHANGELOG.md) para histórico de desenvolvimento.
-A primeira versão pública será `1.0.0` ao publicar no GitHub.
+**v0.5.0 (alpha)** — ver [CHANGELOG](CHANGELOG.md) para histórico de desenvolvimento.
+A primeira versão estável será `1.0.0`.

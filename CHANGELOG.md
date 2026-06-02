@@ -1,10 +1,17 @@
 # Changelog — Werus Dashboard
 
-> **Estado atual:** Alpha — desenvolvimento pessoal, não publicado.
-> A primeira versão pública será `1.0.0` ao publicar no GitHub/marketplace.
-> Versões `0.x.x` = iterações internas de desenvolvimento.
+> **Estado atual:** Alpha — desenvolvimento pessoal, publicado no GitHub
+> ([rafaelcorrealr/Dashboard-for-Obsidian---Style-Notion](https://github.com/rafaelcorrealr/Dashboard-for-Obsidian---Style-Notion)).
+> A primeira versão estável será `1.0.0`. Versões `0.x.x` = iterações internas de desenvolvimento.
 
 ---
+
+## [0.5.0] — alpha — 2026-06-02
+
+- **Suporte a tablet/celular Android (Fase 11):** `isDesktopOnly` passou de `true` para `false` — o plugin agora carrega no Obsidian Mobile. O cofre (incluindo o `main.js`) já chega ao aparelho via Syncthing, então é só habilitar o plugin no app
+  - **CSS responsivo:** `@media (max-width: 600px)` compacta os dois grids de 7 colunas (calendário semanal + semana do Todoist), reduz o padding do root, deixa os cards 2 por linha e estreita a linha de estatísticas. Tablet em paisagem (viewport largo) mantém o layout cheio de desktop
+  - `min-width: 0` nas colunas dos grids de 7 dias evita que o conteúdo estoure a faixa em telas estreitas
+  - Confirmado: o código não usa nenhuma API de Node/Electron (rede via `requestUrl`), então é seguro no mobile. Botão "Abrir no Todoist" via `window.open` validado no aparelho
 
 ## [0.4.1] — alpha — 2026-06-02
 
