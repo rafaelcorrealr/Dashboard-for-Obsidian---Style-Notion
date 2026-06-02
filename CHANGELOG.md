@@ -6,6 +6,17 @@
 
 ---
 
+## [0.3.0] — alpha — 2026-06-01
+
+- **Integração Todoist (Fase 8.1 — leitura):** nova seção "TAREFAS" que puxa as tarefas via API unificada v1 do Todoist (`/api/v1/tasks`, paginada por `next_cursor`; a REST v2 foi aposentada e respondia 410)
+  - Grade da semana atual com chips por dia, cor pela prioridade (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4); prioridade da API (4=urgente) mapeada para a UI
+  - Painel "Atrasadas" recolhível, ordenado por prioridade
+  - Botão de refresh manual (spinner enquanto busca) + carga preguiçosa na primeira abertura
+  - Clicar numa tarefa abre ela no Todoist (web); indicador `⟳` para recorrentes
+  - Aba de configurações do plugin (nova) com campo de token (tipo senha); token salvo em `data.json` (fora do Git)
+  - Seção reordenável/ocultável como as demais; degradação graciosa sem token / erro de rede / token inválido
+- Pendente (Fase 8.2): concluir tarefas pela dashboard (escrita)
+
 ## [0.2.4] — alpha — 2026-05-30
 
 - Capa padrão nos cards PARA sem `cover`/`_cover`: gradiente da cor de acento + ícone da pasta como marca d'água; alinha a altura de todos os cards do topo

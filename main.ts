@@ -1,22 +1,24 @@
-import { App, ItemView, Plugin, TFile, TFolder, WorkspaceLeaf, setIcon } from "obsidian";
+import { App, ItemView, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
 
 const VIEW_TYPE = "werus-dashboard";
 
 type Status = "progress" | "paused" | "cancelled";
-type SectionId = "calendar" | "para" | "reports" | "heatmap" | "growth" | "stats";
+type SectionId = "calendar" | "para" | "reports" | "heatmap" | "growth" | "stats" | "todoist";
 
 interface DashSettings {
   sectionOrder: SectionId[];
   compact: boolean;
   hidden: string[];   // caminhos de pasta ocultos + "sec:calendar" / "sec:reports"
   noteView: "list" | "grid";
+  todoistToken: string;
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
-  sectionOrder: ["stats", "para", "heatmap", "growth", "reports", "calendar"],
+  sectionOrder: ["stats", "todoist", "para", "heatmap", "growth", "reports", "calendar"],
   compact: false,
   hidden: [],
   noteView: "list",
+  todoistToken: "",
 };
 
 interface ParaSection {
@@ -58,6 +60,68 @@ const SEC_REP = "sec:reports";
 const SEC_HEAT = "sec:heatmap";
 const SEC_GROW = "sec:growth";
 const SEC_STAT = "sec:stats";
+const SEC_TODO = "sec:todoist";
+
+// ── Todoist ─────────────────────────────────────────────────────────────────
+
+interface TodoistTask {
+  id: string;
+  content: string;
+  description?: string;
+  priority: number;   // API: 1..4, onde 4 = urgente (= p1 na UI)
+  due?: { date: string; datetime?: string; string?: string; is_recurring?: boolean } | null;
+  project_id?: string;
+  is_completed?: boolean;
+  labels?: string[];
+  url?: string;
+}
+
+// Prioridade da API (4=urgente) → rótulo/cor da UI (p1=vermelho … p4=cinza).
+const TODOIST_PRI: Record<number, { label: string; color: string }> = {
+  4: { label: "p1", color: "#EF4444" },
+  3: { label: "p2", color: "#F59E0B" },
+  2: { label: "p3", color: "#3B82F6" },
+  1: { label: "p4", color: "#6B7280" },
+};
+function priMeta(p: number) { return TODOIST_PRI[p] ?? TODOIST_PRI[1]; }
+
+// Busca as tarefas ativas (não concluídas) via API unificada v1 (a REST v2 foi
+// aposentada → respondia 410). A v1 é paginada: { results, next_cursor }.
+async function fetchTodoistTasks(token: string): Promise<TodoistTask[]> {
+  const all: TodoistTask[] = [];
+  let cursor: string | null = null;
+  do {
+    const url = new URL("https://api.todoist.com/api/v1/tasks");
+    url.searchParams.set("limit", "200");
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const res = await requestUrl({
+      url: url.toString(),
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      throw: false,
+    });
+    if (res.status === 401 || res.status === 403) throw new Error("token inválido (401/403)");
+    if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+
+    const data = res.json as { results?: TodoistTask[]; next_cursor?: string | null };
+    // v1 envelopa em results; tolera resposta como array puro por segurança.
+    if (Array.isArray(data)) { all.push(...(data as TodoistTask[])); cursor = null; }
+    else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
+  } while (cursor);
+  return all;
+}
+
+// URL para abrir a tarefa no Todoist (usa a do payload ou monta a partir do id).
+function taskUrl(t: TodoistTask): string {
+  return t.url ?? `https://app.todoist.com/app/task/${t.id}`;
+}
+
+// Data de vencimento (YYYY-MM-DD) de uma tarefa, ou null se sem due.
+function dueKey(t: TodoistTask): string | null {
+  const d = t.due?.date ?? t.due?.datetime;
+  return d ? d.substring(0, 10) : null;
+}
 
 // Função global exposta pelo plugin "Heatmap Calendar" (quando habilitado).
 type HeatmapEntry = { date: string; intensity?: number; color?: string; content?: string };
@@ -266,6 +330,13 @@ class DashboardView extends ItemView {
   private reviewFilter = false;
   private growthCumulative = false;
 
+  // Estado da integração Todoist
+  private todoistTasks: TodoistTask[] = [];
+  private todoistLoading = false;
+  private todoistError: string | null = null;
+  private todoistFetchedAt = 0;
+  private todoistOverdueOpen = false;
+
   constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) { super(leaf); }
 
   getViewType()    { return VIEW_TYPE; }
@@ -306,6 +377,7 @@ class DashboardView extends ItemView {
       else if (id === "reports") this.renderReports(root);
       else if (id === "growth")  this.renderGrowth(root);
       else if (id === "stats")   this.renderStats(root);
+      else if (id === "todoist") this.renderTodoist(root);
     }
   }
 
@@ -370,6 +442,7 @@ class DashboardView extends ItemView {
     if (key === SEC_HEAT) return "🔥 Heatmap";
     if (key === SEC_GROW) return "📈 Crescimento";
     if (key === SEC_STAT) return "📊 Estatísticas";
+    if (key === SEC_TODO) return "📋 Tarefas";
     const f = this.app.vault.getAbstractFileByPath(key);
     return f instanceof TFolder ? f.name : key;
   }
@@ -981,6 +1054,153 @@ permissions:
     });
   }
 
+  // ── Todoist (Fase 8.1 — leitura) ──────────────────────────────────────────
+
+  private renderTodoist(root: HTMLElement) {
+    if (this.isHidden(SEC_TODO)) return;
+
+    const sec = root.createDiv({ cls: "wd-section wd-todo-section" });
+    const head = sec.createDiv({ cls: "wd-sec-head" });
+    head.createDiv({ cls: "wd-sec-label", text: "TAREFAS" });
+    const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
+
+    const token = this.plugin.settings.todoistToken.trim();
+    if (token) {
+      const refresh = ctrls.createSpan({ cls: "wd-todo-refresh" + (this.todoistLoading ? " wd-spin" : "") });
+      setIcon(refresh, "refresh-cw");
+      refresh.setAttr("title", "Atualizar tarefas do Todoist");
+      refresh.onclick = e => { e.stopPropagation(); void this.fetchTodoist(true); };
+    }
+    this.moveControls(ctrls, "todoist");
+    this.hideBtn(ctrls, SEC_TODO, "Ocultar tarefas", "wd-sec-hide");
+
+    if (!token) {
+      sec.createDiv({ cls: "wd-empty", text: "Cole seu token do Todoist em Configurações → Werus Dashboard para ver suas tarefas aqui." });
+      return;
+    }
+
+    // Primeira carga preguiçosa (não refaz em loop se já buscou ou se deu erro).
+    if (!this.todoistFetchedAt && !this.todoistLoading && !this.todoistError) void this.fetchTodoist(false);
+
+    if (this.todoistError) {
+      sec.createDiv({ cls: "wd-empty wd-todo-error", text: `Erro ao buscar tarefas: ${this.todoistError}` });
+      return;
+    }
+    if (!this.todoistFetchedAt) {
+      sec.createDiv({ cls: "wd-empty", text: "Carregando tarefas…" });
+      return;
+    }
+
+    const monday = mondayOf(0);   // sempre a semana atual
+    const todayK = toKey(new Date());
+    const weekNum = isoWeekNumber(monday);
+
+    // Agrupa por dia de vencimento + coleta atrasadas (due < hoje).
+    const byDay: Record<string, TodoistTask[]> = {};
+    const overdue: TodoistTask[] = [];
+    for (const t of this.todoistTasks) {
+      const dk = dueKey(t);
+      if (!dk) continue;
+      if (dk < todayK) overdue.push(t);
+      (byDay[dk] ??= []).push(t);
+    }
+    const byPri = (a: TodoistTask, b: TodoistTask) => b.priority - a.priority;
+    for (const k of Object.keys(byDay)) byDay[k].sort(byPri);
+    overdue.sort(byPri);
+
+    sec.createDiv({ cls: "wd-todo-weeklabel", text: `Semana ${weekNum} · ${MONTH_SHORT[monday.getMonth()]} ${monday.getFullYear()}` });
+
+    // Grade semanal com chips por dia
+    const grid = sec.createDiv({ cls: "wd-todo-grid" });
+    let weekTaskCount = 0;
+    for (let i = 0; i < 7; i++) {
+      const day = new Date(monday);
+      day.setDate(monday.getDate() + i);
+      const key = toKey(day);
+      const col = grid.createDiv({
+        cls: ["wd-todo-col", key === todayK ? "wd-today" : "", i >= 5 ? "wd-weekend" : ""].filter(Boolean).join(" "),
+      });
+      const hd = col.createDiv({ cls: "wd-todo-colhd" });
+      hd.createSpan({ cls: "wd-todo-dayname", text: DAY_SHORT[i] });
+      hd.createSpan({ cls: "wd-todo-daynum", text: String(day.getDate()) });
+
+      const items = byDay[key] ?? [];
+      for (const t of items) { this.todoChip(col, t); weekTaskCount++; }
+    }
+    if (weekTaskCount === 0)
+      sec.createDiv({ cls: "wd-empty wd-todo-emptyweek", text: "Nenhuma tarefa com data nesta semana." });
+
+    // Painel de atrasadas (recolhível)
+    if (overdue.length) {
+      const panel = sec.createDiv({ cls: "wd-todo-overdue" });
+      const ohd = panel.createDiv({ cls: "wd-todo-ohd" });
+      ohd.createSpan({ cls: "wd-todo-owarn", text: "⚠" });
+      ohd.createSpan({ cls: "wd-todo-otitle", text: `Atrasadas (${overdue.length})` });
+      ohd.createSpan({ cls: "wd-todo-otoggle", text: this.todoistOverdueOpen ? "ocultar ▾" : "mostrar ›" });
+      ohd.onclick = () => { this.todoistOverdueOpen = !this.todoistOverdueOpen; this.render(); };
+
+      if (this.todoistOverdueOpen) {
+        const list = panel.createDiv({ cls: "wd-todo-olist" });
+        for (const t of overdue) this.todoRow(list, t);
+      }
+    }
+  }
+
+  // Chip compacto de tarefa (na grade semanal).
+  private todoChip(col: HTMLElement, t: TodoistTask) {
+    const pri = priMeta(t.priority);
+    const chip = col.createDiv({ cls: "wd-todo-chip" });
+    chip.style.setProperty("--pri", pri.color);
+    if (t.due?.is_recurring) chip.createSpan({ cls: "wd-todo-recur", text: "⟳" });
+    chip.createSpan({ cls: "wd-todo-chip-txt", text: t.content });
+    chip.setAttr("title", `${pri.label} · ${t.content}`);
+    chip.onclick = () => window.open(taskUrl(t), "_blank");
+  }
+
+  // Linha de tarefa (no painel de atrasadas).
+  private todoRow(list: HTMLElement, t: TodoistTask) {
+    const pri = priMeta(t.priority);
+    const row = list.createDiv({ cls: "wd-todo-row" });
+    const tag = row.createSpan({ cls: "wd-todo-pri", text: pri.label });
+    tag.style.background = pri.color;
+    row.createSpan({ cls: "wd-todo-row-txt", text: t.content });
+    const dk = dueKey(t);
+    if (dk) {
+      const [, m, d] = dk.split("-");
+      row.createSpan({ cls: "wd-todo-row-date", text: `${d}/${m}` });
+    }
+    if (t.due?.is_recurring) row.createSpan({ cls: "wd-todo-recur", text: "⟳" });
+    row.setAttr("title", "Abrir no Todoist");
+    row.onclick = () => window.open(taskUrl(t), "_blank");
+  }
+
+  // Busca tarefas; `manual` mostra o spinner imediatamente.
+  private async fetchTodoist(manual: boolean) {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token || this.todoistLoading) return;
+    this.todoistLoading = true;
+    this.todoistError = null;
+    if (manual) this.render();
+    try {
+      this.todoistTasks = await fetchTodoistTasks(token);
+      this.todoistFetchedAt = Date.now();
+    } catch (e) {
+      this.todoistError = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.todoistLoading = false;
+      this.render();
+    }
+  }
+
+  // Reseta o estado (ex.: token alterado nas configurações) e re-renderiza.
+  resetTodoist() {
+    this.todoistTasks = [];
+    this.todoistFetchedAt = 0;
+    this.todoistError = null;
+    this.todoistLoading = false;
+    this.render();
+  }
+
   // ── Header ──────────────────────────────────────────────────────────────────
 
   private renderHeader(root: HTMLElement) {
@@ -1012,12 +1232,21 @@ export default class WerusDashboard extends Plugin {
     this.registerView(VIEW_TYPE, leaf => new DashboardView(leaf, this));
     this.addRibbonIcon("layout-dashboard", "Abrir Werus Dashboard", () => this.open());
     this.addCommand({ id: "open-dashboard", name: "Abrir Dashboard", callback: () => this.open() });
+    this.addSettingTab(new WerusSettingTab(this.app, this));
+  }
+
+  // Re-busca o Todoist em todas as dashboards abertas (ex.: após mudar o token).
+  refreshDashboards() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      const v = leaf.view;
+      if (v instanceof DashboardView) v.resetTodoist();
+    }
   }
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
-    // Saneamento: sectionOrder com exatamente as 3 seções válidas, sem duplicatas.
-    const valid: SectionId[] = ["stats", "para", "heatmap", "growth", "reports", "calendar"];
+    // Saneamento: sectionOrder com exatamente as seções válidas, sem duplicatas.
+    const valid: SectionId[] = ["stats", "todoist", "para", "heatmap", "growth", "reports", "calendar"];
     const seen = new Set<SectionId>();
     const cleaned = (this.settings.sectionOrder || []).filter(
       (s): s is SectionId => valid.includes(s as SectionId) && !seen.has(s as SectionId) && (seen.add(s as SectionId), true)
@@ -1037,4 +1266,31 @@ export default class WerusDashboard extends Plugin {
   }
 
   onunload() {}
+}
+
+// ── Aba de configurações ────────────────────────────────────────────────────
+
+class WerusSettingTab extends PluginSettingTab {
+  constructor(app: App, private plugin: WerusDashboard) { super(app, plugin); }
+
+  display() {
+    const { containerEl } = this;
+    containerEl.empty();
+    containerEl.createEl("h3", { text: "Integração Todoist" });
+
+    new Setting(containerEl)
+      .setName("Token da API")
+      .setDesc("Todoist → Configurações → Integrações → Token de API do desenvolvedor. Salvo localmente em data.json (não vai para o Git).")
+      .addText(t => {
+        t.setPlaceholder("cole o token aqui")
+          .setValue(this.plugin.settings.todoistToken)
+          .onChange(async v => {
+            this.plugin.settings.todoistToken = v.trim();
+            await this.plugin.saveSettings();
+            this.plugin.refreshDashboards();
+          });
+        t.inputEl.type = "password";
+        t.inputEl.style.width = "100%";
+      });
+  }
 }

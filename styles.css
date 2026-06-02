@@ -1038,3 +1038,142 @@
 .wd-compact .wd-folder { font-size: 8px; }
 .wd-compact .wd-has-subs { font-size: 8px; margin-top: 4px; }
 .wd-compact .wd-section { margin-bottom: 20px; }
+
+/* ── Todoist (Fase 8.1) ───────────────────────────────────────────────────── */
+.wd-todo-refresh {
+  display: inline-flex;
+  align-items: center;
+  color: #555;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.wd-todo-refresh:hover { color: #6366F1; }
+.wd-todo-refresh svg { width: 14px; height: 14px; }
+.wd-spin svg { animation: wd-spin 0.8s linear infinite; }
+@keyframes wd-spin { to { transform: rotate(360deg); } }
+
+.wd-todo-weeklabel {
+  font-family: var(--font-monospace, monospace);
+  font-size: 10px;
+  letter-spacing: 1px;
+  color: #555;
+  margin-bottom: 8px;
+}
+
+.wd-todo-grid {
+  display: grid;
+  grid-template-columns: repeat(7, 1fr);
+  gap: 4px;
+}
+
+.wd-todo-col {
+  background: #111118;
+  border: 1px solid #1A1A28;
+  border-radius: 8px;
+  padding: 8px 6px;
+  min-height: 80px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.wd-todo-col.wd-today { border-color: #6366F1; background: #13131E; }
+.wd-todo-col.wd-weekend { background: #0D0D13; }
+
+.wd-todo-colhd {
+  text-align: center;
+  margin-bottom: 2px;
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.wd-todo-dayname {
+  font-family: var(--font-monospace, monospace);
+  font-size: 9px;
+  letter-spacing: 1px;
+  color: #555;
+  text-transform: uppercase;
+}
+.wd-todo-daynum { font-size: 15px; font-weight: 600; color: #888; }
+.wd-today .wd-todo-dayname { color: #6366F1; }
+.wd-today .wd-todo-daynum { color: #E8E8F0; }
+
+.wd-todo-chip {
+  font-size: 9px;
+  padding: 3px 5px 3px 7px;
+  background: #1A1A28;
+  border-left: 3px solid var(--pri, #6B7280);
+  border-radius: 4px;
+  color: #C8C8D8;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  line-height: 1.35;
+  transition: background 0.15s;
+}
+.wd-todo-chip:hover { background: #25253A; }
+.wd-todo-chip-txt {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.wd-todo-recur { color: #777; font-size: 9px; flex-shrink: 0; }
+
+.wd-todo-emptyweek { margin-top: 8px; }
+
+/* Painel de atrasadas */
+.wd-todo-overdue {
+  margin-top: 12px;
+  border: 1px solid #3a1f1f;
+  border-radius: 8px;
+  background: #140f0f;
+  overflow: hidden;
+}
+.wd-todo-ohd {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 10px;
+  cursor: pointer;
+  user-select: none;
+  transition: background 0.15s;
+}
+.wd-todo-ohd:hover { background: #1b1212; }
+.wd-todo-owarn { color: #EF4444; }
+.wd-todo-otitle {
+  font-family: var(--font-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 1px;
+  color: #d88;
+  flex: 1;
+}
+.wd-todo-otoggle { font-size: 10px; color: #666; }
+
+.wd-todo-olist { padding: 0 8px 8px; display: flex; flex-direction: column; gap: 3px; }
+.wd-todo-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px;
+  border-radius: 5px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.wd-todo-row:hover { background: #1E1E2E; }
+.wd-todo-pri {
+  font-family: var(--font-monospace, monospace);
+  font-size: 9px;
+  font-weight: 700;
+  color: #fff;
+  padding: 1px 5px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+.wd-todo-row-txt { flex: 1; font-size: 12px; color: #C8C8D8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wd-todo-row-date { font-family: var(--font-monospace, monospace); font-size: 10px; color: #777; flex-shrink: 0; }
+.wd-todo-error { color: #d88; }
+
+.wd-compact .wd-todo-col { min-height: 64px; padding: 6px 4px; }
+.wd-compact .wd-todo-chip { font-size: 8px; }
