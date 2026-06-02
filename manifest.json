@@ -1,0 +1,9 @@
+{
+  "id": "werus-dashboard",
+  "name": "Werus Dashboard",
+  "version": "0.2.4",
+  "minAppVersion": "1.5.0",
+  "description": "Dashboard pessoal com cards por pasta, estatísticas, gráficos e navegador inline.",
+  "author": "Werus",
+  "isDesktopOnly": true
+}
