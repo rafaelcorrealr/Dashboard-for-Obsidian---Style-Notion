@@ -1,5 +1,7 @@
 # Werus Dashboard
 
+> 🤖 **Este app está sendo criado com o Claude Code** (Anthropic) — desenvolvimento assistido por IA, uma versão por vez, a partir dos pedidos do autor.
+
 Plugin Obsidian pessoal para o Second Brain. Exibe um dashboard com cards por pasta, estatísticas do cofre, calendário semanal, integração com o Todoist, avisos de urgência, gráficos de atividade e navegador inline de notas.
 
 > ⚠️ **Alpha** — desenvolvimento pessoal. Publicado no GitHub; a primeira versão estável será `1.0.0`.
@@ -24,15 +26,20 @@ Plugin Obsidian pessoal para o Second Brain. Exibe um dashboard com cards por pa
 - Filtro "pendentes": mostra só notas com `reviewed: false`
 
 ### Seções (reordenáveis e ocultáveis)
-| Seção | Conteúdo |
-|---|---|
-| `stats` | Total de notas, % revisadas, criadas na semana, breakdown por pasta |
-| `para` | Cards do cofre + navegador inline |
-| `todoist` | Tarefas do Todoist: grade da semana + painel "Atrasadas" (ler e concluir) |
-| `heatmap` | Atividade do cofre via plugin Heatmap Calendar |
-| `growth` | Notas criadas/dia nos últimos 30 dias; modo cumulativo disponível |
-| `reports` | Últimos 6 relatórios Claude de `40.Archive/Relatórios Claude/` |
-| `calendar` | Calendário semanal navegável com notas do dia |
+
+A coluna **Nome no dashboard** é o título que aparece na tela; **id** é o valor usado em
+`sectionOrder` no `data.json`. (Antes esta tabela listava só os ids internos, que não batem
+com o que o usuário vê — por isso a correção.)
+
+| Nome no dashboard | id (`sectionOrder`) | Conteúdo |
+|---|---|---|
+| ESTATÍSTICAS | `stats` | Total de notas, % revisadas, criadas na semana, breakdown por pasta |
+| COFRE | `para` | Cards de todas as pastas de topo + navegador inline |
+| TAREFAS | `todoist` | Tarefas do Todoist: grade da semana + painel "Atrasadas" (ler e concluir) |
+| ATIVIDADE DO COFRE | `heatmap` | Heatmap de notas criadas/dia via plugin Heatmap Calendar |
+| CRESCIMENTO DO COFRE | `growth` | Notas criadas/dia nos últimos 30 dias; modo cumulativo disponível |
+| RELATÓRIOS CLAUDE | `reports` | Últimos 6 relatórios Claude de `40.Archive/Relatórios Claude/` |
+| Semana N | `calendar` | Calendário semanal navegável com notas do dia (`date:`) |
 
 ### Integração Todoist
 - Grade da semana atual com as tarefas, **chips coloridos por prioridade** (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4) + painel "Atrasadas" recolhível
@@ -173,5 +180,5 @@ main.ts
 
 ## Versão atual
 
-**v0.5.0 (alpha)** — ver [CHANGELOG](CHANGELOG.md) para histórico de desenvolvimento.
+**v0.6.0 (alpha)** — ver [CHANGELOG](CHANGELOG.md) para histórico de desenvolvimento.
 A primeira versão estável será `1.0.0`.

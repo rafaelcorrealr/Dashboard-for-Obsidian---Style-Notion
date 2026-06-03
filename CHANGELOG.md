@@ -6,6 +6,15 @@
 
 ---
 
+## [0.6.0] — alpha — 2026-06-02
+
+Pass de **documentação & convenções** (sem mudança de código). Início do roadmap derivado da tarefa "Changes" do Todoist.
+
+- **README:** aviso no topo de que o app está sendo criado com o **Claude Code**
+- **README — tabela "Seções" corrigida:** antes listava só os ids internos (`stats`, `para`…), que não batem com os títulos exibidos. Agora mostra **Nome no dashboard → id** (ex.: COFRE = `para`, TAREFAS = `todoist`, ATIVIDADE DO COFRE = `heatmap`)
+- **Recuperação de conflito:** os docs do cofre haviam sido revertidos por um conflito do Syncthing (o `README` voltou a exibir "v2.4"); conteúdo recuperado das cópias `*.sync-conflict-*` e reconsolidado
+- **Planejamento → roadmap:** reestruturado; "Fase N" renomeadas para "Versão x.y.z"
+
 ## [0.5.0] — alpha — 2026-06-02
 
 - **Suporte a tablet/celular Android (Fase 11):** `isDesktopOnly` passou de `true` para `false` — o plugin agora carrega no Obsidian Mobile. O cofre (incluindo o `main.js`) já chega ao aparelho via Syncthing, então é só habilitar o plugin no app
