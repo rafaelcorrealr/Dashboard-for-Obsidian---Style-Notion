@@ -6,6 +6,16 @@
 
 ---
 
+## [0.7.0] — alpha — 2026-06-03
+
+**Todoist redesenhado.** A seção TAREFAS deixou de ser uma grade fixa Seg→Dom e passou a priorizar pela urgência real:
+
+- **Nova ordem de blocos:** 1º **Atrasadas** (recolhível, vermelho) · 2º **Hoje** · 3º **Próximos N dias** (grade de colunas, de amanhã em diante) · 4º **Depois** (tudo com vencimento além da janela; recolhível, fechado por padrão)
+- **Toggle 3 / 7 dias** no header da seção (`settings.todoistDayRange`, default 7) — define o tamanho da janela "Próximos dias". A grade ajusta o nº de colunas automaticamente
+- **Filtros por projeto e etiqueta:** botão de funil no header abre uma barra de **chips** (toggle). Projetos vêm de um novo fetch `GET /api/v1/projects`; etiquetas saem das próprias tarefas (`t.labels`). Persistidos em `settings.todoistFilters`; o botão mostra a contagem de filtros ativos e há um "limpar filtros". Combinação projeto **E** etiqueta
+- As linhas de tarefa (Atrasadas / Hoje / Depois) agora mostram o **nome do projeto** ao lado
+- Reaproveita toda a lógica existente: `dueKey`, `priMeta`, `todoChip`, `todoRow`, `todoCheck`, `completeTask`, `attachTaskTip`, `openTaskModal` (conclusão e descrição inalteradas)
+
 ## [0.6.0] — alpha — 2026-06-02
 
 Pass de **documentação & convenções** (sem mudança de código). Início do roadmap derivado da tarefa "Changes" do Todoist.

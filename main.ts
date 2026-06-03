@@ -5,12 +5,19 @@ const VIEW_TYPE = "werus-dashboard";
 type Status = "progress" | "paused" | "cancelled";
 type SectionId = "calendar" | "para" | "reports" | "heatmap" | "growth" | "stats" | "todoist";
 
+interface TodoistFilters {
+  projects: string[];   // ids de projeto selecionados (vazio = todos)
+  labels: string[];     // nomes de etiqueta selecionados (vazio = todas)
+}
+
 interface DashSettings {
   sectionOrder: SectionId[];
   compact: boolean;
   hidden: string[];   // caminhos de pasta ocultos + "sec:calendar" / "sec:reports"
   noteView: "list" | "grid";
   todoistToken: string;
+  todoistDayRange: 3 | 7;        // quantos "próximos dias" mostrar na grade
+  todoistFilters: TodoistFilters;
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
@@ -19,6 +26,8 @@ const DEFAULT_SETTINGS: DashSettings = {
   hidden: [],
   noteView: "list",
   todoistToken: "",
+  todoistDayRange: 7,
+  todoistFilters: { projects: [], labels: [] },
 };
 
 interface ParaSection {
@@ -107,6 +116,35 @@ async function fetchTodoistTasks(token: string): Promise<TodoistTask[]> {
     const data = res.json as { results?: TodoistTask[]; next_cursor?: string | null };
     // v1 envelopa em results; tolera resposta como array puro por segurança.
     if (Array.isArray(data)) { all.push(...(data as TodoistTask[])); cursor = null; }
+    else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
+  } while (cursor);
+  return all;
+}
+
+interface TodoistProject {
+  id: string;
+  name: string;
+}
+
+// Busca os projetos (para o filtro). Mesma API v1 paginada das tarefas.
+async function fetchTodoistProjects(token: string): Promise<TodoistProject[]> {
+  const all: TodoistProject[] = [];
+  let cursor: string | null = null;
+  do {
+    const url = new URL("https://api.todoist.com/api/v1/projects");
+    url.searchParams.set("limit", "200");
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const res = await requestUrl({
+      url: url.toString(),
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      throw: false,
+    });
+    if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+
+    const data = res.json as { results?: TodoistProject[]; next_cursor?: string | null };
+    if (Array.isArray(data)) { all.push(...(data as TodoistProject[])); cursor = null; }
     else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
   } while (cursor);
   return all;
@@ -388,10 +426,14 @@ class DashboardView extends ItemView {
 
   // Estado da integração Todoist
   private todoistTasks: TodoistTask[] = [];
+  private todoistProjects: TodoistProject[] = [];
+  private todoistProjectMap = new Map<string, string>();   // id → nome
   private todoistLoading = false;
   private todoistError: string | null = null;
   private todoistFetchedAt = 0;
   private todoistOverdueOpen = false;
+  private todoistLaterOpen = false;
+  private todoistFilterOpen = false;
 
   constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) { super(leaf); }
 
@@ -1187,6 +1229,29 @@ permissions:
 
     const token = this.plugin.settings.todoistToken.trim();
     if (token) {
+      // Toggle de janela "próximos dias" (3 / 7).
+      const range = this.dayRange();
+      const seg = ctrls.createDiv({ cls: "wd-todo-range" });
+      for (const n of [3, 7] as const) {
+        const b = seg.createSpan({ cls: "wd-todo-range-btn" + (range === n ? " wd-on" : ""), text: `${n}d` });
+        b.setAttr("title", `Mostrar os próximos ${n} dias`);
+        b.onclick = async e => {
+          e.stopPropagation();
+          this.plugin.settings.todoistDayRange = n;
+          await this.plugin.saveSettings();
+          this.render();
+        };
+      }
+
+      // Botão de filtros (projeto/etiqueta).
+      const f = this.plugin.settings.todoistFilters;
+      const nF = f.projects.length + f.labels.length;
+      const filt = ctrls.createSpan({ cls: "wd-todo-filterbtn" + (this.todoistFilterOpen ? " wd-on" : "") + (nF ? " wd-active" : "") });
+      setIcon(filt, "filter");
+      filt.setAttr("title", nF ? `Filtros ativos (${nF}) — clique para ajustar` : "Filtrar por projeto/etiqueta");
+      if (nF) filt.createSpan({ cls: "wd-todo-filtct", text: String(nF) });
+      filt.onclick = e => { e.stopPropagation(); this.todoistFilterOpen = !this.todoistFilterOpen; this.render(); };
+
       const refresh = ctrls.createSpan({ cls: "wd-todo-refresh" + (this.todoistLoading ? " wd-spin" : "") });
       setIcon(refresh, "refresh-cw");
       refresh.setAttr("title", "Atualizar tarefas do Todoist");
@@ -1212,46 +1277,41 @@ permissions:
       return;
     }
 
-    const monday = mondayOf(0);   // sempre a semana atual
-    const todayK = toKey(new Date());
-    const weekNum = isoWeekNumber(monday);
+    // Barra de filtros (recolhível).
+    if (this.todoistFilterOpen) this.renderTodoFilterBar(sec);
 
-    // Agrupa por dia de vencimento + coleta atrasadas (due < hoje).
-    const byDay: Record<string, TodoistTask[]> = {};
+    const range = this.dayRange();
+    const todayK = toKey(new Date());
+    const lastUpcoming = new Date();
+    lastUpcoming.setDate(lastUpcoming.getDate() + range);
+    const lastK = toKey(lastUpcoming);   // limite dos "próximos dias" (inclusive)
+
+    // Aplica filtros e separa em baldes: atrasadas · hoje · próximos N dias · depois.
+    const tasks = this.applyTodoistFilters(this.todoistTasks);
     const overdue: TodoistTask[] = [];
-    for (const t of this.todoistTasks) {
+    const todayTasks: TodoistTask[] = [];
+    const byDay: Record<string, TodoistTask[]> = {};
+    const later: TodoistTask[] = [];
+    for (const t of tasks) {
       const dk = dueKey(t);
-      if (!dk) continue;
+      if (!dk) continue;   // sem data: fora dos blocos por dia (poderá virar "Caixa de entrada" no futuro)
       if (dk < todayK) overdue.push(t);
-      (byDay[dk] ??= []).push(t);
+      else if (dk === todayK) todayTasks.push(t);
+      else if (dk <= lastK) (byDay[dk] ??= []).push(t);
+      else later.push(t);
     }
     const byPri = (a: TodoistTask, b: TodoistTask) => b.priority - a.priority;
+    overdue.sort(byPri); todayTasks.sort(byPri); later.sort(byPri);
     for (const k of Object.keys(byDay)) byDay[k].sort(byPri);
-    overdue.sort(byPri);
 
-    sec.createDiv({ cls: "wd-todo-weeklabel", text: `Semana ${weekNum} · ${MONTH_SHORT[monday.getMonth()]} ${monday.getFullYear()}` });
-
-    // Grade semanal com chips por dia
-    const grid = sec.createDiv({ cls: "wd-todo-grid" });
-    let weekTaskCount = 0;
-    for (let i = 0; i < 7; i++) {
-      const day = new Date(monday);
-      day.setDate(monday.getDate() + i);
-      const key = toKey(day);
-      const col = grid.createDiv({
-        cls: ["wd-todo-col", key === todayK ? "wd-today" : "", i >= 5 ? "wd-weekend" : ""].filter(Boolean).join(" "),
-      });
-      const hd = col.createDiv({ cls: "wd-todo-colhd" });
-      hd.createSpan({ cls: "wd-todo-dayname", text: DAY_SHORT[i] });
-      hd.createSpan({ cls: "wd-todo-daynum", text: String(day.getDate()) });
-
-      const items = byDay[key] ?? [];
-      for (const t of items) { this.todoChip(col, t); weekTaskCount++; }
+    const visible = overdue.length + todayTasks.length + later.length + Object.values(byDay).reduce((s, a) => s + a.length, 0);
+    if (visible === 0) {
+      const all = this.todoistTasks.length;
+      sec.createDiv({ cls: "wd-empty", text: all ? "Nenhuma tarefa bate com os filtros." : "Nenhuma tarefa com data no Todoist. 🎉" });
+      return;
     }
-    if (weekTaskCount === 0)
-      sec.createDiv({ cls: "wd-empty wd-todo-emptyweek", text: "Nenhuma tarefa com data nesta semana." });
 
-    // Painel de atrasadas (recolhível)
+    // 1º — Atrasadas (recolhível, destaque vermelho).
     if (overdue.length) {
       const panel = sec.createDiv({ cls: "wd-todo-overdue" });
       const ohd = panel.createDiv({ cls: "wd-todo-ohd" });
@@ -1259,11 +1319,111 @@ permissions:
       ohd.createSpan({ cls: "wd-todo-otitle", text: `Atrasadas (${overdue.length})` });
       ohd.createSpan({ cls: "wd-todo-otoggle", text: this.todoistOverdueOpen ? "ocultar ▾" : "mostrar ›" });
       ohd.onclick = () => { this.todoistOverdueOpen = !this.todoistOverdueOpen; this.render(); };
-
       if (this.todoistOverdueOpen) {
         const list = panel.createDiv({ cls: "wd-todo-olist" });
         for (const t of overdue) this.todoRow(list, t);
       }
+    }
+
+    // 2º — Hoje.
+    const todayBlock = sec.createDiv({ cls: "wd-todo-block wd-todo-today-block" });
+    const th = todayBlock.createDiv({ cls: "wd-todo-block-head" });
+    th.createSpan({ cls: "wd-todo-block-label", text: "Hoje" });
+    th.createSpan({ cls: "wd-todo-block-count", text: String(todayTasks.length) });
+    if (todayTasks.length) {
+      const list = todayBlock.createDiv({ cls: "wd-todo-blocklist" });
+      for (const t of todayTasks) this.todoRow(list, t);
+    } else {
+      todayBlock.createDiv({ cls: "wd-todo-blockempty", text: "Nada para hoje." });
+    }
+
+    // 3º — Próximos N dias (grade de colunas, de amanhã até hoje+N).
+    const upLabel = sec.createDiv({ cls: "wd-todo-block-label wd-todo-uplabel", text: `Próximos ${range} dias` });
+    upLabel.setAttr("style", "margin-top:14px");
+    const grid = sec.createDiv({ cls: "wd-todo-grid", attr: { style: `grid-template-columns: repeat(${range}, 1fr)` } });
+    let upcomingCount = 0;
+    for (let i = 1; i <= range; i++) {
+      const day = new Date();
+      day.setDate(day.getDate() + i);
+      const key = toKey(day);
+      const dow = (day.getDay() + 6) % 7;   // 0 = Seg … 6 = Dom
+      const col = grid.createDiv({ cls: ["wd-todo-col", dow >= 5 ? "wd-weekend" : ""].filter(Boolean).join(" ") });
+      const hd = col.createDiv({ cls: "wd-todo-colhd" });
+      hd.createSpan({ cls: "wd-todo-dayname", text: DAY_SHORT[dow] });
+      hd.createSpan({ cls: "wd-todo-daynum", text: String(day.getDate()) });
+      const items = byDay[key] ?? [];
+      for (const t of items) { this.todoChip(col, t); upcomingCount++; }
+    }
+    if (upcomingCount === 0)
+      sec.createDiv({ cls: "wd-empty wd-todo-emptyweek", text: `Nenhuma tarefa nos próximos ${range} dias.` });
+
+    // 4º — Depois (> N dias à frente; recolhível, fechado por padrão).
+    if (later.length) {
+      const panel = sec.createDiv({ cls: "wd-todo-later" });
+      const lhd = panel.createDiv({ cls: "wd-todo-ohd" });
+      lhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
+      lhd.createSpan({ cls: "wd-todo-otitle", text: `Depois (${later.length})` });
+      lhd.createSpan({ cls: "wd-todo-otoggle", text: this.todoistLaterOpen ? "ocultar ▾" : "mostrar ›" });
+      lhd.onclick = () => { this.todoistLaterOpen = !this.todoistLaterOpen; this.render(); };
+      if (this.todoistLaterOpen) {
+        const list = panel.createDiv({ cls: "wd-todo-olist" });
+        for (const t of later) this.todoRow(list, t);
+      }
+    }
+  }
+
+  // Janela de "próximos dias" saneada (3 ou 7).
+  private dayRange(): 3 | 7 {
+    return this.plugin.settings.todoistDayRange === 3 ? 3 : 7;
+  }
+
+  // Mantém só as tarefas que batem com os filtros ativos (projeto E etiqueta).
+  private applyTodoistFilters(tasks: TodoistTask[]): TodoistTask[] {
+    const f = this.plugin.settings.todoistFilters;
+    if (!f.projects.length && !f.labels.length) return tasks;
+    const ps = new Set(f.projects), ls = new Set(f.labels);
+    return tasks.filter(t => {
+      if (ps.size && !(t.project_id && ps.has(t.project_id))) return false;
+      if (ls.size && !(t.labels ?? []).some(l => ls.has(l))) return false;
+      return true;
+    });
+  }
+
+  private toggleTodoFilter(kind: "projects" | "labels", id: string) {
+    const arr = this.plugin.settings.todoistFilters[kind];
+    const i = arr.indexOf(id);
+    if (i >= 0) arr.splice(i, 1); else arr.push(id);
+  }
+
+  // Barra de filtros: chips de projeto e de etiqueta (toggle), + limpar.
+  private renderTodoFilterBar(sec: HTMLElement) {
+    const f = this.plugin.settings.todoistFilters;
+    const bar = sec.createDiv({ cls: "wd-todo-filterbar" });
+
+    if (this.todoistProjects.length) {
+      const grp = bar.createDiv({ cls: "wd-todo-fgroup" });
+      grp.createSpan({ cls: "wd-todo-flabel", text: "Projetos" });
+      for (const p of this.todoistProjects) {
+        const on = f.projects.includes(p.id);
+        const chip = grp.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: p.name });
+        chip.onclick = async () => { this.toggleTodoFilter("projects", p.id); await this.plugin.saveSettings(); this.render(); };
+      }
+    }
+
+    const labels = [...new Set(this.todoistTasks.flatMap(t => t.labels ?? []))].sort((a, b) => a.localeCompare(b));
+    if (labels.length) {
+      const grp = bar.createDiv({ cls: "wd-todo-fgroup" });
+      grp.createSpan({ cls: "wd-todo-flabel", text: "Etiquetas" });
+      for (const l of labels) {
+        const on = f.labels.includes(l);
+        const chip = grp.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: `@${l}` });
+        chip.onclick = async () => { this.toggleTodoFilter("labels", l); await this.plugin.saveSettings(); this.render(); };
+      }
+    }
+
+    if (f.projects.length || f.labels.length) {
+      const clr = bar.createSpan({ cls: "wd-todo-fclear", text: "limpar filtros" });
+      clr.onclick = async () => { f.projects = []; f.labels = []; await this.plugin.saveSettings(); this.render(); };
     }
   }
 
@@ -1317,6 +1477,8 @@ permissions:
     tag.style.background = pri.color;
     row.createSpan({ cls: "wd-todo-row-txt", text: t.content });
     if (hasDesc(t)) setIcon(row.createSpan({ cls: "wd-todo-hasdesc" }), "align-left");
+    const proj = t.project_id ? this.todoistProjectMap.get(t.project_id) : undefined;
+    if (proj) row.createSpan({ cls: "wd-todo-row-proj", text: proj });
     const dk = dueKey(t);
     if (dk) {
       const [, m, d] = dk.split("-");
@@ -1359,7 +1521,14 @@ permissions:
     this.todoistError = null;
     if (manual) this.render();
     try {
-      this.todoistTasks = await fetchTodoistTasks(token);
+      // Projetos são para o filtro; se falharem, não derrubam as tarefas.
+      const [tasks, projects] = await Promise.all([
+        fetchTodoistTasks(token),
+        fetchTodoistProjects(token).catch(() => [] as TodoistProject[]),
+      ]);
+      this.todoistTasks = tasks;
+      this.todoistProjects = projects;
+      this.todoistProjectMap = new Map(projects.map(p => [p.id, p.name]));
       this.todoistFetchedAt = Date.now();
     } catch (e) {
       this.todoistError = e instanceof Error ? e.message : String(e);
@@ -1372,6 +1541,8 @@ permissions:
   // Reseta o estado (ex.: token alterado nas configurações) e re-renderiza.
   resetTodoist() {
     this.todoistTasks = [];
+    this.todoistProjects = [];
+    this.todoistProjectMap = new Map();
     this.todoistFetchedAt = 0;
     this.todoistError = null;
     this.todoistLoading = false;
@@ -1431,6 +1602,13 @@ export default class WerusDashboard extends Plugin {
     for (const v of valid) if (!seen.has(v)) cleaned.push(v);
     this.settings.sectionOrder = cleaned;
     if (!Array.isArray(this.settings.hidden)) this.settings.hidden = [];
+    // Saneamento Todoist (v0.7.0).
+    this.settings.todoistDayRange = this.settings.todoistDayRange === 3 ? 3 : 7;
+    const tf = this.settings.todoistFilters;
+    this.settings.todoistFilters = {
+      projects: Array.isArray(tf?.projects) ? tf.projects : [],
+      labels: Array.isArray(tf?.labels) ? tf.labels : [],
+    };
   }
 
   async saveSettings() { await this.saveData(this.settings); }

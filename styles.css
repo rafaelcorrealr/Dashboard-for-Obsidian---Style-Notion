@@ -1237,8 +1237,116 @@
   flex-shrink: 0;
 }
 .wd-todo-row-txt { flex: 1; font-size: 12px; color: #C8C8D8; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wd-todo-row-proj {
+  font-size: 9px;
+  color: #777;
+  background: #1A1A28;
+  border: 1px solid #2A2A3E;
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .wd-todo-row-date { font-family: var(--font-monospace, monospace); font-size: 10px; color: #777; flex-shrink: 0; }
 .wd-todo-error { color: #d88; }
+
+/* ── v0.7.0 — Controles do header (toggle 3/7 + filtros) ─────────────────── */
+.wd-todo-range { display: inline-flex; border: 1px solid #2A2A3E; border-radius: 6px; overflow: hidden; }
+.wd-todo-range-btn {
+  font-family: var(--font-monospace, monospace);
+  font-size: 10px;
+  color: #777;
+  padding: 2px 7px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+}
+.wd-todo-range-btn:hover { color: #C8C8D8; }
+.wd-todo-range-btn.wd-on { background: #6366F1; color: #fff; }
+
+.wd-todo-filterbtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  color: #555;
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.wd-todo-filterbtn:hover, .wd-todo-filterbtn.wd-on { color: #6366F1; }
+.wd-todo-filterbtn.wd-active { color: #F59E0B; }
+.wd-todo-filterbtn svg { width: 14px; height: 14px; }
+.wd-todo-filtct { font-size: 9px; font-weight: 700; }
+
+/* Barra de filtros */
+.wd-todo-filterbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  margin-bottom: 12px;
+  background: #0D0D13;
+  border: 1px solid #1E1E2E;
+  border-radius: 8px;
+}
+.wd-todo-fgroup { display: flex; flex-wrap: wrap; align-items: center; gap: 5px; }
+.wd-todo-flabel {
+  font-family: var(--font-monospace, monospace);
+  font-size: 9px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #555;
+  margin-right: 4px;
+}
+.wd-todo-fchip {
+  font-size: 10px;
+  color: #A8A8BC;
+  background: #1A1A28;
+  border: 1px solid #2A2A3E;
+  border-radius: 12px;
+  padding: 2px 9px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s, border-color 0.15s;
+}
+.wd-todo-fchip:hover { background: #25253A; }
+.wd-todo-fchip.wd-on { background: #6366F1; border-color: #6366F1; color: #fff; }
+.wd-todo-fclear { font-size: 10px; color: #777; cursor: pointer; align-self: flex-start; }
+.wd-todo-fclear:hover { color: #EF4444; }
+
+/* Blocos "Hoje" / "Próximos dias" / "Depois" */
+.wd-todo-block { margin-bottom: 12px; }
+.wd-todo-block-head { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+.wd-todo-block-label {
+  font-family: var(--font-monospace, monospace);
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #888;
+}
+.wd-todo-uplabel { display: block; margin-bottom: 7px; }
+.wd-todo-block-count {
+  font-family: var(--font-monospace, monospace);
+  font-size: 9px;
+  font-weight: 700;
+  color: #888;
+  background: #1A1A28;
+  border-radius: 9px;
+  padding: 1px 7px;
+}
+.wd-todo-blocklist { display: flex; flex-direction: column; gap: 3px; }
+.wd-todo-blockempty { font-size: 11px; color: #555; padding: 2px 6px; }
+.wd-todo-today-block .wd-todo-block-label { color: #6366F1; }
+
+/* Painel "Depois" (mesma casca recolhível das atrasadas, sem o vermelho) */
+.wd-todo-later {
+  margin-top: 12px;
+  border: 1px solid #1E1E2E;
+  border-radius: 8px;
+  background: #0D0D13;
+  overflow: hidden;
+}
+.wd-todo-laterico { color: #777; font-weight: 700; }
 
 .wd-compact .wd-todo-col { min-height: 64px; padding: 6px 4px; }
 .wd-compact .wd-todo-chip { font-size: 8px; }
