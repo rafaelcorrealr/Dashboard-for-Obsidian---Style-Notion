@@ -18,6 +18,8 @@ interface DashSettings {
   todoistToken: string;
   todoistDayRange: 3 | 7;        // quantos "próximos dias" mostrar na grade
   todoistFilters: TodoistFilters;
+  todoistShowProject: boolean;   // mostrar o nome do projeto nas linhas
+  todoistShowLabels: boolean;    // mostrar as etiquetas nas linhas
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
@@ -28,6 +30,8 @@ const DEFAULT_SETTINGS: DashSettings = {
   todoistToken: "",
   todoistDayRange: 7,
   todoistFilters: { projects: [], labels: [] },
+  todoistShowProject: true,
+  todoistShowLabels: false,
 };
 
 interface ParaSection {
@@ -160,6 +164,74 @@ async function closeTodoistTask(token: string, id: string): Promise<void> {
   const res = await requestUrl({
     url: `https://api.todoist.com/api/v1/tasks/${id}/close`,
     method: "POST",
+    headers: { Authorization: `Bearer ${token}` },
+    throw: false,
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("token inválido (401/403)");
+  if (res.status !== 204 && res.status !== 200) throw new Error(`HTTP ${res.status}`);
+}
+
+// ── Escrita: criar / editar / mover / excluir (v0.8.0) ───────────────────────
+
+// Campos graváveis. Todos opcionais — no editar mando só o que mudou.
+interface TodoistWrite {
+  content?: string;
+  description?: string;
+  priority?: number;     // 1..4 (4 = urgente / p1 na UI)
+  due_string?: string;   // linguagem natural; "no date" limpa a data
+  due_lang?: string;     // "pt" → interpreta em português
+  labels?: string[];
+  project_id?: string;
+}
+
+function jsonHeaders(token: string) {
+  return { Authorization: `Bearer ${token}`, "Content-Type": "application/json" };
+}
+
+// Cria uma tarefa. POST /tasks → 200 com a tarefa criada.
+async function createTodoistTask(token: string, fields: TodoistWrite): Promise<TodoistTask> {
+  const res = await requestUrl({
+    url: "https://api.todoist.com/api/v1/tasks",
+    method: "POST",
+    headers: jsonHeaders(token),
+    body: JSON.stringify(fields),
+    throw: false,
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("token inválido (401/403)");
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+  return res.json as TodoistTask;
+}
+
+// Edita uma tarefa. POST /tasks/{id} → 200. Não troca de projeto (use moveTodoistTask).
+async function updateTodoistTask(token: string, id: string, fields: TodoistWrite): Promise<void> {
+  const res = await requestUrl({
+    url: `https://api.todoist.com/api/v1/tasks/${id}`,
+    method: "POST",
+    headers: jsonHeaders(token),
+    body: JSON.stringify(fields),
+    throw: false,
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("token inválido (401/403)");
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+}
+
+// Move a tarefa para outro projeto. POST /tasks/{id}/move → 200.
+async function moveTodoistTask(token: string, id: string, project_id: string): Promise<void> {
+  const res = await requestUrl({
+    url: `https://api.todoist.com/api/v1/tasks/${id}/move`,
+    method: "POST",
+    headers: jsonHeaders(token),
+    body: JSON.stringify({ project_id }),
+    throw: false,
+  });
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+}
+
+// Exclui a tarefa. DELETE /tasks/{id} → 204.
+async function deleteTodoistTask(token: string, id: string): Promise<void> {
+  const res = await requestUrl({
+    url: `https://api.todoist.com/api/v1/tasks/${id}`,
+    method: "DELETE",
     headers: { Authorization: `Bearer ${token}` },
     throw: false,
   });
@@ -1255,6 +1327,8 @@ permissions:
       setIcon(refresh, "refresh-cw");
       refresh.setAttr("title", "Atualizar tarefas do Todoist");
       refresh.onclick = e => { e.stopPropagation(); void this.fetchTodoist(true); };
+
+      this.addTaskBtn(ctrls, undefined, "Nova tarefa");
     }
     this.moveControls(ctrls, "todoist");
     this.hideBtn(ctrls, SEC_TODO, "Ocultar tarefas", "wd-sec-hide");
@@ -1327,6 +1401,7 @@ permissions:
     const tbox = cols.createDiv({ cls: "wd-todo-box wd-box-today" });
     const thd = tbox.createDiv({ cls: "wd-todo-boxhd" });
     thd.createSpan({ cls: "wd-todo-boxlabel", text: "Hoje" });
+    this.addTaskBtn(thd, "hoje", "Nova tarefa para hoje");
     thd.createSpan({ cls: "wd-todo-boxcount", text: String(todayTasks.length) });
     const tbody = tbox.createDiv({ cls: "wd-todo-boxbody" });
     if (todayTasks.length) for (const t of todayTasks) this.todoRow(tbody, t);
@@ -1334,18 +1409,20 @@ permissions:
 
     // 3ª — Próximos N dias (agrupado por dia, com sub-título só nos dias que têm tarefa).
     let upcomingCount = 0;
-    const upDays: { dow: number; num: number; items: TodoistTask[] }[] = [];
+    const upDays: { dow: number; num: number; key: string; items: TodoistTask[] }[] = [];
     for (let i = 1; i <= range; i++) {
       const day = new Date();
       day.setDate(day.getDate() + i);
-      const items = byDay[toKey(day)];
+      const key = toKey(day);
+      const items = byDay[key];
       if (!items?.length) continue;
       upcomingCount += items.length;
-      upDays.push({ dow: (day.getDay() + 6) % 7, num: day.getDate(), items });
+      upDays.push({ dow: (day.getDay() + 6) % 7, num: day.getDate(), key, items });
     }
     const ubox = cols.createDiv({ cls: "wd-todo-box wd-box-upcoming" });
     const uhd = ubox.createDiv({ cls: "wd-todo-boxhd" });
     uhd.createSpan({ cls: "wd-todo-boxlabel", text: `Próximos ${range} dias` });
+    this.addTaskBtn(uhd, undefined, "Nova tarefa");
     uhd.createSpan({ cls: "wd-todo-boxcount", text: String(upcomingCount) });
     const ubody = ubox.createDiv({ cls: "wd-todo-boxbody" });
     if (upDays.length) {
@@ -1353,6 +1430,7 @@ permissions:
         const dh = ubody.createDiv({ cls: "wd-todo-dayhd" + (g.dow >= 5 ? " wd-weekend" : "") });
         dh.createSpan({ cls: "wd-todo-dayname", text: DAY_SHORT[g.dow] });
         dh.createSpan({ cls: "wd-todo-daynum", text: String(g.num) });
+        this.addTaskBtn(dh, g.key, `Nova tarefa em ${g.num}`);
         for (const t of g.items) this.todoRow(ubody, t, false);
       }
     } else {
@@ -1467,21 +1545,112 @@ permissions:
     row.createSpan({ cls: "wd-todo-row-txt", text: t.content });
     if (hasDesc(t)) setIcon(row.createSpan({ cls: "wd-todo-hasdesc" }), "align-left");
     const proj = t.project_id ? this.todoistProjectMap.get(t.project_id) : undefined;
-    if (proj) row.createSpan({ cls: "wd-todo-row-proj", text: proj });
+    if (this.plugin.settings.todoistShowProject && proj) row.createSpan({ cls: "wd-todo-row-proj", text: proj });
+    if (this.plugin.settings.todoistShowLabels)
+      for (const l of t.labels ?? []) row.createSpan({ cls: "wd-todo-row-label", text: `@${l}` });
     const dk = dueKey(t);
     if (showDate && dk) {
       const [, m, d] = dk.split("-");
       row.createSpan({ cls: "wd-todo-row-date", text: `${d}/${m}` });
     }
     if (t.due?.is_recurring) row.createSpan({ cls: "wd-todo-recur", text: "⟳" });
-    row.onclick = () => this.openTaskModal(t);
+    row.onclick = () => this.openTaskDetail(t);
     this.attachTaskTip(row, t);
   }
 
-  // Abre o modal de detalhes da tarefa (descrição com links clicáveis).
-  private openTaskModal(t: TodoistTask) {
+  // Botão "+" de criar tarefa (header da seção, caixas e sub-títulos de dia).
+  private addTaskBtn(host: HTMLElement, prefillDue?: string, title = "Nova tarefa") {
+    const b = host.createSpan({ cls: "wd-todo-add" });
+    setIcon(b, "plus");
+    b.setAttr("title", title);
+    b.onclick = e => { e.stopPropagation(); this.openTaskForm({ mode: "create", prefillDue }); };
+    return b;
+  }
+
+  // Abre o formulário de tarefa (criar ou editar).
+  private openTaskForm(opts: { mode: "create" | "edit"; task?: TodoistTask; prefillDue?: string }) {
     this.hideTip();
-    new TaskModal(this.app, t, this, () => void this.completeTask(t)).open();
+    const labels = [...new Set(this.todoistTasks.flatMap(t => t.labels ?? []))].sort((a, b) => a.localeCompare(b));
+    new TaskFormModal(this.app, {
+      mode: opts.mode,
+      task: opts.task,
+      prefillDue: opts.prefillDue,
+      projects: this.todoistProjects,
+      labels,
+      submit: v => this.submitTaskForm(opts.mode, opts.task, v),
+      remove: opts.task ? () => this.deleteTask(opts.task!) : undefined,
+      complete: opts.task ? () => void this.completeTask(opts.task!) : undefined,
+    }).open();
+  }
+
+  // Abre o pop-up de detalhes (só leitura); o botão "Editar" abre o formulário.
+  private openTaskDetail(t: TodoistTask) {
+    this.hideTip();
+    new TaskDetailModal(this.app, this, {
+      task: t,
+      projectName: t.project_id ? this.todoistProjectMap.get(t.project_id) : undefined,
+      edit: () => this.openTaskForm({ mode: "edit", task: t }),
+      complete: () => void this.completeTask(t),
+    }).open();
+  }
+
+  // Cria ou edita no Todoist real. No editar manda só os campos alterados (preserva
+  // recorrência se a data não mudou) e troca de projeto via /move. Retorna true se OK.
+  private async submitTaskForm(mode: "create" | "edit", task: TodoistTask | undefined, v: TaskFormValues): Promise<boolean> {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) return false;
+    try {
+      if (mode === "create") {
+        const fields: TodoistWrite = { content: v.content, priority: v.priority };
+        if (v.description.trim()) fields.description = v.description.trim();
+        if (v.dueString.trim()) { fields.due_string = v.dueString.trim(); fields.due_lang = "pt"; }
+        if (v.projectId) fields.project_id = v.projectId;
+        if (v.labels.length) fields.labels = v.labels;
+        await createTodoistTask(token, fields);
+        new Notice(`✓ Criada: ${v.content}`);
+      } else if (task) {
+        const fields: TodoistWrite = {};
+        if (v.content !== task.content) fields.content = v.content;
+        if (v.description !== (task.description ?? "")) fields.description = v.description;
+        if (v.priority !== task.priority) fields.priority = v.priority;
+        const oldDue = task.due?.string ?? task.due?.date ?? "";
+        if (v.dueString.trim() !== oldDue) {
+          fields.due_string = v.dueString.trim() || "no date";
+          if (v.dueString.trim()) fields.due_lang = "pt";
+        }
+        const oldL = (task.labels ?? []).slice().sort().join(" ");
+        const newL = v.labels.slice().sort().join(" ");
+        if (oldL !== newL) fields.labels = v.labels;
+        if (Object.keys(fields).length) await updateTodoistTask(token, task.id, fields);
+        const oldProj = task.project_id ?? "";
+        if (v.projectId !== oldProj && v.projectId) await moveTodoistTask(token, task.id, v.projectId);
+        new Notice(`✓ Salva: ${v.content}`);
+      }
+      await this.fetchTodoist(true);
+      return true;
+    } catch (e) {
+      new Notice(`Falha ao salvar: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  }
+
+  // Exclui a tarefa (otimista) no Todoist real. Retorna true se OK.
+  private async deleteTask(t: TodoistTask): Promise<boolean> {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) return false;
+    const idx = this.todoistTasks.findIndex(x => x.id === t.id);
+    if (idx >= 0) this.todoistTasks.splice(idx, 1);
+    this.render();
+    try {
+      await deleteTodoistTask(token, t.id);
+      new Notice(`🗑 Excluída: ${t.content}`);
+      return true;
+    } catch (e) {
+      if (idx >= 0) this.todoistTasks.splice(idx, 0, t);   // reverte
+      new Notice(`Falha ao excluir: ${e instanceof Error ? e.message : String(e)}`);
+      this.render();
+      return false;
+    }
   }
 
   // Conclui a tarefa de forma otimista: remove da lista e re-renderiza; se a API
@@ -1598,6 +1767,9 @@ export default class WerusDashboard extends Plugin {
       projects: Array.isArray(tf?.projects) ? tf.projects : [],
       labels: Array.isArray(tf?.labels) ? tf.labels : [],
     };
+    // Exibição nas linhas (v0.8.0).
+    this.settings.todoistShowProject = this.settings.todoistShowProject !== false;
+    this.settings.todoistShowLabels = this.settings.todoistShowLabels === true;
   }
 
   async saveSettings() { await this.saveData(this.settings); }
@@ -1612,34 +1784,225 @@ export default class WerusDashboard extends Plugin {
   onunload() {}
 }
 
-// ── Modal de detalhes da tarefa (descrição com links clicáveis) ──────────────
+// ── Pop-up de detalhes da tarefa (só leitura; botão Editar abre o formulário) ─
 
-class TaskModal extends Modal {
-  constructor(
-    app: App,
-    private task: TodoistTask,
-    private component: Component,
-    private onComplete: () => void,
-  ) { super(app); }
+interface TaskDetailOpts {
+  task: TodoistTask;
+  projectName?: string;
+  edit: () => void;
+  complete: () => void;
+}
+
+class TaskDetailModal extends Modal {
+  constructor(app: App, private component: Component, private opts: TaskDetailOpts) { super(app); }
 
   onOpen() {
     const { contentEl, titleEl, modalEl } = this;
+    const t = this.opts.task;
     modalEl.addClass("wd-task-modal");
-    titleEl.setText(this.task.content);
+    titleEl.setText(t.content);
 
-    if (hasDesc(this.task)) {
+    const meta = contentEl.createDiv({ cls: "wd-td-meta" });
+    const pri = priMeta(t.priority);
+    meta.createSpan({ cls: "wd-td-pri", text: pri.label }).style.background = pri.color;
+    const dk = dueKey(t);
+    if (dk) {
+      const [y, m, d] = dk.split("-");
+      meta.createSpan({ cls: "wd-td-chip", text: `📅 ${d}/${m}/${y}${t.due?.is_recurring ? " ⟳" : ""}` });
+    }
+    if (this.opts.projectName) meta.createSpan({ cls: "wd-td-chip", text: `# ${this.opts.projectName}` });
+    for (const l of t.labels ?? []) meta.createSpan({ cls: "wd-td-chip", text: `@${l}` });
+
+    if (hasDesc(t)) {
       const body = contentEl.createDiv({ cls: "wd-task-modal-desc markdown-rendered" });
-      // Renderiza a descrição como markdown → links clicáveis (abrem no navegador).
-      void MarkdownRenderer.render(this.app, this.task.description!.trim(), body, "", this.component);
+      void MarkdownRenderer.render(this.app, t.description!.trim(), body, "", this.component);
     } else {
       contentEl.createEl("p", { cls: "wd-task-modal-empty", text: "Esta tarefa não tem descrição." });
     }
 
+    // Editar (esquerda) · Concluir + Abrir no Todoist (direita).
     const actions = contentEl.createDiv({ cls: "wd-task-modal-actions" });
-    const open = actions.createEl("button", { text: "Abrir no Todoist" });
-    open.onclick = () => window.open(taskUrl(this.task), "_blank");
-    const done = actions.createEl("button", { text: "✓ Concluir", cls: "mod-cta" });
-    done.onclick = () => { this.onComplete(); this.close(); };
+    const edit = actions.createEl("button", { text: "✎ Editar" });
+    edit.onclick = () => { this.close(); this.opts.edit(); };
+    actions.createDiv({ cls: "wd-tf-spacer" });
+    const done = actions.createEl("button", { text: "✓ Concluir" });
+    done.onclick = () => { this.opts.complete(); this.close(); };
+    const open = actions.createEl("button", { text: "Abrir no Todoist", cls: "mod-cta" });
+    open.onclick = () => window.open(taskUrl(t), "_blank");
+  }
+
+  onClose() { this.contentEl.empty(); }
+}
+
+// ── Formulário de tarefa (criar / editar) ────────────────────────────────────
+
+interface TaskFormValues {
+  content: string;
+  description: string;
+  priority: number;   // API 1..4 (4 = p1)
+  dueString: string;
+  projectId: string;
+  labels: string[];
+}
+
+interface TaskFormOpts {
+  mode: "create" | "edit";
+  task?: TodoistTask;
+  prefillDue?: string;
+  projects: TodoistProject[];
+  labels: string[];
+  submit: (v: TaskFormValues) => Promise<boolean>;
+  remove?: () => Promise<boolean>;
+  complete?: () => void;
+}
+
+class TaskFormModal extends Modal {
+  private v: TaskFormValues;
+  private knownLabels: string[];
+  private confirmDel = false;
+  private actionsEl!: HTMLElement;
+
+  constructor(app: App, private opts: TaskFormOpts) {
+    super(app);
+    const t = opts.task;
+    this.v = {
+      content: t?.content ?? "",
+      description: t?.description ?? "",
+      priority: t?.priority ?? 1,
+      dueString: t?.due?.string ?? opts.prefillDue ?? "",
+      projectId: t?.project_id ?? "",
+      labels: (t?.labels ?? []).slice(),
+    };
+    this.knownLabels = [...new Set([...opts.labels, ...this.v.labels])].sort((a, b) => a.localeCompare(b));
+  }
+
+  onOpen() {
+    const { contentEl, titleEl, modalEl } = this;
+    modalEl.addClass("wd-task-form");
+    titleEl.setText(this.opts.mode === "create" ? "Nova tarefa" : "Editar tarefa");
+
+    this.field("Título");
+    const content = contentEl.createEl("input", { cls: "wd-tf-input", type: "text" });
+    content.value = this.v.content;
+    content.placeholder = "O que precisa ser feito?";
+    content.oninput = () => { this.v.content = content.value; };
+    setTimeout(() => content.focus(), 0);
+
+    this.field("Descrição");
+    const desc = contentEl.createEl("textarea", { cls: "wd-tf-textarea" });
+    desc.value = this.v.description;
+    desc.placeholder = "Detalhes / instruções (markdown)";
+    desc.rows = 3;
+    desc.oninput = () => { this.v.description = desc.value; };
+
+    this.field("Prioridade");
+    const prow = contentEl.createDiv({ cls: "wd-tf-pri-row" });
+    const renderPri = () => {
+      prow.empty();
+      for (const api of [4, 3, 2, 1]) {
+        const meta = TODOIST_PRI[api];
+        const b = prow.createSpan({ cls: "wd-tf-pri" + (this.v.priority === api ? " wd-on" : ""), text: meta.label });
+        b.style.setProperty("--pri", meta.color);
+        b.onclick = () => { this.v.priority = api; renderPri(); };
+      }
+    };
+    renderPri();
+
+    this.field("Data");
+    const due = contentEl.createEl("input", { cls: "wd-tf-input", type: "text" });
+    due.value = this.v.dueString;
+    due.placeholder = "ex.: amanhã, sexta, todo dia 1, 2026-06-10";
+    due.oninput = () => { this.v.dueString = due.value; };
+    contentEl.createDiv({ cls: "wd-tf-hint", text: "Texto em português. Vazio = sem data." });
+    if (this.opts.task?.due?.is_recurring)
+      contentEl.createDiv({ cls: "wd-tf-warn", text: "⟳ Tarefa recorrente — mudar a data pode alterar a recorrência." });
+
+    this.field("Projeto");
+    const sel = contentEl.createEl("select", { cls: "wd-tf-select" });
+    const inbox = sel.createEl("option", { text: "Entrada (Inbox)", value: "" });
+    if (!this.v.projectId) inbox.selected = true;
+    for (const p of this.opts.projects) {
+      const o = sel.createEl("option", { text: p.name, value: p.id });
+      if (p.id === this.v.projectId) o.selected = true;
+    }
+    sel.onchange = () => { this.v.projectId = sel.value; };
+
+    this.field("Etiquetas");
+    const lwrap = contentEl.createDiv({ cls: "wd-tf-labels" });
+    const renderLabels = () => {
+      lwrap.empty();
+      for (const l of this.knownLabels) {
+        const on = this.v.labels.includes(l);
+        const chip = lwrap.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: `@${l}` });
+        chip.onclick = () => {
+          const i = this.v.labels.indexOf(l);
+          if (i >= 0) this.v.labels.splice(i, 1); else this.v.labels.push(l);
+          renderLabels();
+        };
+      }
+    };
+    renderLabels();
+    const ladd = contentEl.createEl("input", { cls: "wd-tf-input wd-tf-labeladd", type: "text" });
+    ladd.placeholder = "+ nova etiqueta (Enter)";
+    ladd.onkeydown = e => {
+      if (e.key !== "Enter") return;
+      e.preventDefault();
+      const name = ladd.value.trim().replace(/^@/, "");
+      if (!name) return;
+      if (!this.knownLabels.includes(name)) { this.knownLabels.push(name); this.knownLabels.sort((a, b) => a.localeCompare(b)); }
+      if (!this.v.labels.includes(name)) this.v.labels.push(name);
+      ladd.value = "";
+      renderLabels();
+    };
+
+    this.actionsEl = contentEl.createDiv({ cls: "wd-tf-actions" });
+    this.renderActions();
+  }
+
+  private field(label: string) {
+    this.contentEl.createDiv({ cls: "wd-tf-label", text: label });
+  }
+
+  private renderActions() {
+    const a = this.actionsEl;
+    a.empty();
+
+    if (this.confirmDel && this.opts.remove) {
+      a.createSpan({ cls: "wd-tf-confirm", text: "Excluir esta tarefa?" });
+      a.createDiv({ cls: "wd-tf-spacer" });
+      const yes = a.createEl("button", { text: "Excluir", cls: "mod-warning" });
+      yes.onclick = async () => {
+        yes.disabled = true;
+        if (await this.opts.remove!()) this.close();
+        else { this.confirmDel = false; this.renderActions(); }
+      };
+      const no = a.createEl("button", { text: "Cancelar" });
+      no.onclick = () => { this.confirmDel = false; this.renderActions(); };
+      return;
+    }
+
+    if (this.opts.mode === "edit") {
+      const del = a.createEl("button", { text: "Excluir", cls: "mod-warning" });
+      del.onclick = () => { this.confirmDel = true; this.renderActions(); };
+      const open = a.createEl("button", { text: "Abrir no Todoist" });
+      open.onclick = () => { if (this.opts.task) window.open(taskUrl(this.opts.task), "_blank"); };
+      if (this.opts.complete) {
+        const done = a.createEl("button", { text: "✓ Concluir" });
+        done.onclick = () => { this.opts.complete!(); this.close(); };
+      }
+    }
+
+    a.createDiv({ cls: "wd-tf-spacer" });
+    const cancel = a.createEl("button", { text: "Cancelar" });
+    cancel.onclick = () => this.close();
+    const save = a.createEl("button", { text: "Salvar", cls: "mod-cta" });
+    save.onclick = async () => {
+      this.v.content = this.v.content.trim();
+      if (!this.v.content) { new Notice("Dê um título à tarefa."); return; }
+      save.disabled = true;
+      if (await this.opts.submit(this.v)) this.close();
+      else save.disabled = false;
+    };
   }
 
   onClose() { this.contentEl.empty(); }
@@ -1669,5 +2032,29 @@ class WerusSettingTab extends PluginSettingTab {
         t.inputEl.type = "password";
         t.inputEl.style.width = "100%";
       });
+
+    containerEl.createEl("h3", { text: "Exibição das tarefas" });
+
+    new Setting(containerEl)
+      .setName("Mostrar o projeto nas linhas")
+      .setDesc("Exibe o nome do projeto ao lado de cada tarefa.")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.todoistShowProject)
+        .onChange(async v => {
+          this.plugin.settings.todoistShowProject = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshDashboards();
+        }));
+
+    new Setting(containerEl)
+      .setName("Mostrar as etiquetas nas linhas")
+      .setDesc("Exibe as @etiquetas de cada tarefa.")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.todoistShowLabels)
+        .onChange(async v => {
+          this.plugin.settings.todoistShowLabels = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshDashboards();
+        }));
   }
 }

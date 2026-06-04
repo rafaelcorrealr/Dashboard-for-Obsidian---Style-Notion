@@ -42,10 +42,12 @@ com o que o usuário vê — por isso a correção.)
 | Semana N | `calendar` | Calendário semanal navegável com notas do dia (`date:`) |
 
 ### Integração Todoist
-- **3 caixas lado a lado por urgência:** **Atrasadas** (vermelha) · **Hoje** (destaque) · **Próximos N dias** (lista agrupada por dia, com sub-título por dia). Tarefas além da janela ficam em **"Depois"** (recolhível, abaixo). Cada linha tem **prioridade colorida** (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4) e o nome do projeto
+- **3 caixas lado a lado por urgência:** **Atrasadas** (vermelha) · **Hoje** (destaque) · **Próximos N dias** (lista agrupada por dia, com sub-título por dia). Tarefas além da janela ficam em **"Depois"** (recolhível, abaixo). Cada linha tem **prioridade colorida** (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4)
 - **Toggle 3 / 7 dias** e **filtros por projeto/etiqueta** (chips) no header da seção
+- **Criar tarefa:** botão **"+"** (com brilho vermelho) no header, na caixa Hoje e em cada dia (já preenche a data daquele dia)
+- **Editar / excluir:** clicar numa tarefa abre o **pop-up de detalhes** (descrição em markdown com links); o botão **"✎ Editar"** abre o formulário (título, descrição, prioridade, data em texto natural pt, projeto, etiquetas) com **Salvar** e **Excluir** (confirmação). No editar envia só os campos alterados (preserva recorrência)
 - **Concluir tarefa** pela checkbox (sync de duas vias: fecha no Todoist real via API) — conclusão otimista, reverte se a API falhar
-- *Hover* mostra tooltip com a descrição; *clicar* abre modal com a descrição em markdown (links clicáveis) + botões "Abrir no Todoist" e "✓ Concluir"
+- **Configurações → Exibição das tarefas:** mostrar **projeto** e/ou **etiquetas** nas linhas (padrão: só projeto)
 - Indicador `⟳` para tarefas recorrentes; botão `↻` de refresh manual; as 3 caixas empilham no celular
 - Requer o token pessoal do Todoist nas configurações do plugin (salvo em `data.json`, fora do Git)
 

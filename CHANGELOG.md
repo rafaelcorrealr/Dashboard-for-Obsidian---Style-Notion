@@ -6,6 +6,17 @@
 
 ---
 
+## [0.7.2] — alpha — 2026-06-04
+
+**Todoist: criar, editar e excluir** (sync de duas vias completo; API v1, mesmo padrão `requestUrl`+Bearer). *Em andamento — mais ajustes desta feature virão ainda na série 0.7.x.*
+
+- **Criar:** botão **"+"** (maior, com brilho vermelho) no header da seção, na caixa **Hoje** e em cada **sub-título de dia** — já pré-preenchendo a data (Hoje → "hoje", dia → aquela data). **Sem "+" nas Atrasadas** (não se cria tarefa para o passado).
+- **Editar em 2 passos:** clicar numa tarefa abre um **pop-up só-leitura** (prioridade, data/recorrência, projeto, etiquetas e descrição em markdown com links clicáveis); o botão **"✎ Editar"** (canto inferior esquerdo) abre o **formulário** completo.
+- **Formulário:** título, descrição, prioridade (p1–p4), **data em texto natural pt** (`due_string`+`due_lang:"pt"`: "amanhã", "todo dia 1", "2026-06-10"), projeto (troca via `/move`) e etiquetas (chips + adicionar nova). No editar envia **só os campos alterados** (preserva recorrência se a data não muda).
+- **Excluir** com confirmação em 2 passos (DELETE otimista).
+- **Configurações → Exibição das tarefas:** dois toggles para **mostrar o projeto** e/ou **as etiquetas** nas linhas (padrão: só projeto). Antes o projeto era fixo.
+- API: `createTodoistTask` (POST `/tasks`), `updateTodoistTask` (POST `/tasks/{id}`), `moveTodoistTask` (POST `/tasks/{id}/move`), `deleteTodoistTask` (DELETE `/tasks/{id}`).
+
 ## [0.7.1] — alpha — 2026-06-04
 
 **Todoist na horizontal.** A v0.7.0 ainda ficava muito vertical (blocos empilhados). Agora a seção TAREFAS mostra **3 caixas lado a lado**:
