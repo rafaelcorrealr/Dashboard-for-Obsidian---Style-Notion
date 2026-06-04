@@ -6,6 +6,15 @@
 
 ---
 
+## [0.8.0] — alpha — 2026-06-04
+
+**Tema claro automático.** O dashboard agora **segue o tema do Obsidian** (claro/escuro) sozinho, sem botão.
+
+- **Camada de tokens `--wd-*`** mapeando fundos, bordas e textos para as variáveis do Obsidian (`--background-*`, `--text-*`). O **accent** segue o do tema (`--interactive-accent`).
+- **Cores semânticas mantidas** (prioridade, urgência, etiquetas, verde do crescimento); o **vermelho das Atrasadas** virou translúcido para funcionar nos dois temas.
+- **Bordas com contraste garantido** nos dois temas (cinza translúcido `rgba(130,130,130,.32)`) — a `--background-modifier-border` do Obsidian era sutil demais com tantos cards; a separação some/aparece agora corretamente.
+- **Correções de robustez:** fallback nos tokens "-alt" (`--background-secondary-alt`/`-primary-alt`) → caem para a base quando o tema não os define; **tooltip/preview** com fundo opaco fixo (`--background-secondary`) — antes ficava transparente em temas sem o "-alt".
+
 ## [0.7.3] — alpha — 2026-06-04
 
 **Etiquetas coloridas + formulário mais enxuto.**

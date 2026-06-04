@@ -6,6 +6,7 @@ Plugin Obsidian pessoal para o Second Brain. Exibe um dashboard com cards por pa
 
 > ⚠️ **Alpha** — desenvolvimento pessoal. Publicado no GitHub; a primeira versão estável será `1.0.0`.
 > Compatível com Obsidian ≥ 1.5.0, **desktop e mobile** (Android testado). Em telas estreitas o layout é responsivo.
+> **Segue o tema do Obsidian** (claro/escuro) automaticamente, usando a cor de destaque do seu tema.
 
 ---
 
