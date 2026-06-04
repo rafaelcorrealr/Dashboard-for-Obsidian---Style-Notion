@@ -431,7 +431,6 @@ class DashboardView extends ItemView {
   private todoistLoading = false;
   private todoistError: string | null = null;
   private todoistFetchedAt = 0;
-  private todoistOverdueOpen = false;
   private todoistLaterOpen = false;
   private todoistFilterOpen = false;
 
@@ -1311,53 +1310,56 @@ permissions:
       return;
     }
 
-    // 1º — Atrasadas (recolhível, destaque vermelho).
-    if (overdue.length) {
-      const panel = sec.createDiv({ cls: "wd-todo-overdue" });
-      const ohd = panel.createDiv({ cls: "wd-todo-ohd" });
-      ohd.createSpan({ cls: "wd-todo-owarn", text: "⚠" });
-      ohd.createSpan({ cls: "wd-todo-otitle", text: `Atrasadas (${overdue.length})` });
-      ohd.createSpan({ cls: "wd-todo-otoggle", text: this.todoistOverdueOpen ? "ocultar ▾" : "mostrar ›" });
-      ohd.onclick = () => { this.todoistOverdueOpen = !this.todoistOverdueOpen; this.render(); };
-      if (this.todoistOverdueOpen) {
-        const list = panel.createDiv({ cls: "wd-todo-olist" });
-        for (const t of overdue) this.todoRow(list, t);
-      }
-    }
+    // Linha horizontal com 3 caixas lado a lado: Atrasadas · Hoje · Próximos N dias.
+    const cols = sec.createDiv({ cls: "wd-todo-cols" });
 
-    // 2º — Hoje.
-    const todayBlock = sec.createDiv({ cls: "wd-todo-block wd-todo-today-block" });
-    const th = todayBlock.createDiv({ cls: "wd-todo-block-head" });
-    th.createSpan({ cls: "wd-todo-block-label", text: "Hoje" });
-    th.createSpan({ cls: "wd-todo-block-count", text: String(todayTasks.length) });
-    if (todayTasks.length) {
-      const list = todayBlock.createDiv({ cls: "wd-todo-blocklist" });
-      for (const t of todayTasks) this.todoRow(list, t);
-    } else {
-      todayBlock.createDiv({ cls: "wd-todo-blockempty", text: "Nada para hoje." });
-    }
+    // 1ª — Atrasadas (caixa vermelha).
+    const obox = cols.createDiv({ cls: "wd-todo-box wd-box-overdue" });
+    const ohd = obox.createDiv({ cls: "wd-todo-boxhd" });
+    ohd.createSpan({ cls: "wd-todo-boxwarn", text: "⚠" });
+    ohd.createSpan({ cls: "wd-todo-boxlabel", text: "Atrasadas" });
+    ohd.createSpan({ cls: "wd-todo-boxcount", text: String(overdue.length) });
+    const obody = obox.createDiv({ cls: "wd-todo-boxbody" });
+    if (overdue.length) for (const t of overdue) this.todoRow(obody, t);
+    else obody.createDiv({ cls: "wd-todo-boxempty", text: "Nenhuma. 👍" });
 
-    // 3º — Próximos N dias (grade de colunas, de amanhã até hoje+N).
-    const upLabel = sec.createDiv({ cls: "wd-todo-block-label wd-todo-uplabel", text: `Próximos ${range} dias` });
-    upLabel.setAttr("style", "margin-top:14px");
-    const grid = sec.createDiv({ cls: "wd-todo-grid", attr: { style: `grid-template-columns: repeat(${range}, 1fr)` } });
+    // 2ª — Hoje (caixa em destaque).
+    const tbox = cols.createDiv({ cls: "wd-todo-box wd-box-today" });
+    const thd = tbox.createDiv({ cls: "wd-todo-boxhd" });
+    thd.createSpan({ cls: "wd-todo-boxlabel", text: "Hoje" });
+    thd.createSpan({ cls: "wd-todo-boxcount", text: String(todayTasks.length) });
+    const tbody = tbox.createDiv({ cls: "wd-todo-boxbody" });
+    if (todayTasks.length) for (const t of todayTasks) this.todoRow(tbody, t);
+    else tbody.createDiv({ cls: "wd-todo-boxempty", text: "Nada para hoje." });
+
+    // 3ª — Próximos N dias (agrupado por dia, com sub-título só nos dias que têm tarefa).
     let upcomingCount = 0;
+    const upDays: { dow: number; num: number; items: TodoistTask[] }[] = [];
     for (let i = 1; i <= range; i++) {
       const day = new Date();
       day.setDate(day.getDate() + i);
-      const key = toKey(day);
-      const dow = (day.getDay() + 6) % 7;   // 0 = Seg … 6 = Dom
-      const col = grid.createDiv({ cls: ["wd-todo-col", dow >= 5 ? "wd-weekend" : ""].filter(Boolean).join(" ") });
-      const hd = col.createDiv({ cls: "wd-todo-colhd" });
-      hd.createSpan({ cls: "wd-todo-dayname", text: DAY_SHORT[dow] });
-      hd.createSpan({ cls: "wd-todo-daynum", text: String(day.getDate()) });
-      const items = byDay[key] ?? [];
-      for (const t of items) { this.todoChip(col, t); upcomingCount++; }
+      const items = byDay[toKey(day)];
+      if (!items?.length) continue;
+      upcomingCount += items.length;
+      upDays.push({ dow: (day.getDay() + 6) % 7, num: day.getDate(), items });
     }
-    if (upcomingCount === 0)
-      sec.createDiv({ cls: "wd-empty wd-todo-emptyweek", text: `Nenhuma tarefa nos próximos ${range} dias.` });
+    const ubox = cols.createDiv({ cls: "wd-todo-box wd-box-upcoming" });
+    const uhd = ubox.createDiv({ cls: "wd-todo-boxhd" });
+    uhd.createSpan({ cls: "wd-todo-boxlabel", text: `Próximos ${range} dias` });
+    uhd.createSpan({ cls: "wd-todo-boxcount", text: String(upcomingCount) });
+    const ubody = ubox.createDiv({ cls: "wd-todo-boxbody" });
+    if (upDays.length) {
+      for (const g of upDays) {
+        const dh = ubody.createDiv({ cls: "wd-todo-dayhd" + (g.dow >= 5 ? " wd-weekend" : "") });
+        dh.createSpan({ cls: "wd-todo-dayname", text: DAY_SHORT[g.dow] });
+        dh.createSpan({ cls: "wd-todo-daynum", text: String(g.num) });
+        for (const t of g.items) this.todoRow(ubody, t, false);
+      }
+    } else {
+      ubody.createDiv({ cls: "wd-todo-boxempty", text: `Nada nos próximos ${range} dias.` });
+    }
 
-    // 4º — Depois (> N dias à frente; recolhível, fechado por padrão).
+    // Depois (> N dias à frente; recolhível, abaixo da linha, fechado por padrão).
     if (later.length) {
       const panel = sec.createDiv({ cls: "wd-todo-later" });
       const lhd = panel.createDiv({ cls: "wd-todo-ohd" });
@@ -1454,21 +1456,8 @@ permissions:
     el.addEventListener("mouseleave", () => this.hideTip());
   }
 
-  // Chip compacto de tarefa (na grade semanal).
-  private todoChip(col: HTMLElement, t: TodoistTask) {
-    const pri = priMeta(t.priority);
-    const chip = col.createDiv({ cls: "wd-todo-chip" });
-    chip.style.setProperty("--pri", pri.color);
-    this.todoCheck(chip, t);
-    if (t.due?.is_recurring) chip.createSpan({ cls: "wd-todo-recur", text: "⟳" });
-    chip.createSpan({ cls: "wd-todo-chip-txt", text: t.content });
-    if (hasDesc(t)) setIcon(chip.createSpan({ cls: "wd-todo-hasdesc" }), "align-left");
-    chip.onclick = () => this.openTaskModal(t);
-    this.attachTaskTip(chip, t);
-  }
-
-  // Linha de tarefa (no painel de atrasadas).
-  private todoRow(list: HTMLElement, t: TodoistTask) {
+  // Linha de tarefa (usada nas 3 caixas: atrasadas, hoje, próximos e em "depois").
+  private todoRow(list: HTMLElement, t: TodoistTask, showDate = true) {
     const pri = priMeta(t.priority);
     const row = list.createDiv({ cls: "wd-todo-row" });
     row.style.setProperty("--pri", pri.color);
@@ -1480,7 +1469,7 @@ permissions:
     const proj = t.project_id ? this.todoistProjectMap.get(t.project_id) : undefined;
     if (proj) row.createSpan({ cls: "wd-todo-row-proj", text: proj });
     const dk = dueKey(t);
-    if (dk) {
+    if (showDate && dk) {
       const [, m, d] = dk.split("-");
       row.createSpan({ cls: "wd-todo-row-date", text: `${d}/${m}` });
     }

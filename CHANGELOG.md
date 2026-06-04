@@ -6,6 +6,17 @@
 
 ---
 
+## [0.7.1] — alpha — 2026-06-04
+
+**Todoist na horizontal.** A v0.7.0 ainda ficava muito vertical (blocos empilhados). Agora a seção TAREFAS mostra **3 caixas lado a lado**:
+
+- **Atrasadas** (caixa fixa em vermelho) · **Hoje** (caixa em destaque indigo) · **Próximos N dias** — nessa ordem, em linha. Some o painel recolhível de atrasadas: vira uma caixa sempre visível com rolagem própria (cada caixa rola sozinha após ~380px)
+- A caixa **Próximos N dias** deixou de ser uma grade de 7 colunas estreitas e virou uma **lista agrupada por dia**, com **sub-título por dia** (ex.: `TER 05`) só nos dias que têm tarefa; fim de semana em roxo. Dentro do grupo a data sai de cada linha (já está no sub-título)
+- **Depois** (> N dias) continua recolhível, agora **abaixo** da linha de caixas
+- No celular/painel estreito as 3 caixas **empilham** automaticamente (rolagem reduzida p/ 260px)
+- O **toggle 3/7** e os **filtros** (projeto/etiqueta) continuam no header, inalterados
+- Limpeza: removidos o método `todoChip` (era da grade antiga) e o estado `todoistOverdueOpen`. `todoRow` ganhou parâmetro `showDate` (oculta a data quando já há sub-título de dia)
+
 ## [0.7.0] — alpha — 2026-06-03
 
 **Todoist redesenhado.** A seção TAREFAS deixou de ser uma grade fixa Seg→Dom e passou a priorizar pela urgência real:

@@ -35,17 +35,18 @@ com o que o usuário vê — por isso a correção.)
 |---|---|---|
 | ESTATÍSTICAS | `stats` | Total de notas, % revisadas, criadas na semana, breakdown por pasta |
 | COFRE | `para` | Cards de todas as pastas de topo + navegador inline |
-| TAREFAS | `todoist` | Tarefas do Todoist: grade da semana + painel "Atrasadas" (ler e concluir) |
+| TAREFAS | `todoist` | Tarefas do Todoist em 3 caixas (Atrasadas · Hoje · Próximos N dias) + "Depois" (ler e concluir) |
 | ATIVIDADE DO COFRE | `heatmap` | Heatmap de notas criadas/dia via plugin Heatmap Calendar |
 | CRESCIMENTO DO COFRE | `growth` | Notas criadas/dia nos últimos 30 dias; modo cumulativo disponível |
 | RELATÓRIOS CLAUDE | `reports` | Últimos 6 relatórios Claude de `40.Archive/Relatórios Claude/` |
 | Semana N | `calendar` | Calendário semanal navegável com notas do dia (`date:`) |
 
 ### Integração Todoist
-- Grade da semana atual com as tarefas, **chips coloridos por prioridade** (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4) + painel "Atrasadas" recolhível
+- **3 caixas lado a lado por urgência:** **Atrasadas** (vermelha) · **Hoje** (destaque) · **Próximos N dias** (lista agrupada por dia, com sub-título por dia). Tarefas além da janela ficam em **"Depois"** (recolhível, abaixo). Cada linha tem **prioridade colorida** (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4) e o nome do projeto
+- **Toggle 3 / 7 dias** e **filtros por projeto/etiqueta** (chips) no header da seção
 - **Concluir tarefa** pela checkbox (sync de duas vias: fecha no Todoist real via API) — conclusão otimista, reverte se a API falhar
 - *Hover* mostra tooltip com a descrição; *clicar* abre modal com a descrição em markdown (links clicáveis) + botões "Abrir no Todoist" e "✓ Concluir"
-- Indicador `⟳` para tarefas recorrentes; botão `↻` de refresh manual
+- Indicador `⟳` para tarefas recorrentes; botão `↻` de refresh manual; as 3 caixas empilham no celular
 - Requer o token pessoal do Todoist nas configurações do plugin (salvo em `data.json`, fora do Git)
 
 ### Aviso de urgência
