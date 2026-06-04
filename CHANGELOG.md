@@ -6,6 +6,14 @@
 
 ---
 
+## [0.7.3] — alpha — 2026-06-04
+
+**Etiquetas coloridas + formulário mais enxuto.**
+
+- **Etiquetas com a cor do Todoist:** novo `fetchTodoistLabels` (`GET /labels`) + paleta nomeada → hex (`TODOIST_COLORS`); cada chip de etiqueta ganha uma **bolinha colorida** nas linhas, no pop-up de detalhes, na barra de filtros e no formulário. (As cores usam os hex clássicos da paleta — ajustáveis.)
+- **Removido o "adicionar nova etiqueta"** do formulário: agora só se **seleciona** entre etiquetas existentes (busca todas, não só as em uso) — evita criar etiqueta por engano/typo.
+- Criar/excluir projetos e etiquetas ficará para uma futura **aba de configuração do Todoist** (anotada no roadmap como ideia, a decidir).
+
 ## [0.7.2] — alpha — 2026-06-04
 
 **Todoist: criar, editar e excluir** (sync de duas vias completo; API v1, mesmo padrão `requestUrl`+Bearer). *Em andamento — mais ajustes desta feature virão ainda na série 0.7.x.*

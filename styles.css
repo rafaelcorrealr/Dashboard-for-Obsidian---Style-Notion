@@ -1494,17 +1494,29 @@
 /* Etiqueta na linha de tarefa (quando "mostrar etiquetas" está ligado) */
 .wd-todo-row-label {
   font-size: 9px;
-  color: #8b8df3;
-  background: #1b1b2e;
-  border: 1px solid #2f2f50;
+  color: #A8A8BC;
+  background: #1A1A28;
+  border: 1px solid #2A2A3E;
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 1px 6px;
   flex-shrink: 0;
-  max-width: 110px;
+  max-width: 120px;
+  display: inline-flex;
+  align-items: center;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* Bolinha colorida da etiqueta (cor da paleta do Todoist) */
+.wd-label-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+  margin-right: 4px;
+}
+.wd-todo-fchip, .wd-td-label { display: inline-flex; align-items: center; }
 
 /* Pop-up de detalhes: faixa de metadados (prioridade, data, projeto, etiquetas) */
 .wd-td-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-bottom: 12px; }

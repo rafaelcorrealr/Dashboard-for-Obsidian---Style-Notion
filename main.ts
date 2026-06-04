@@ -98,6 +98,16 @@ const TODOIST_PRI: Record<number, { label: string; color: string }> = {
 };
 function priMeta(p: number) { return TODOIST_PRI[p] ?? TODOIST_PRI[1]; }
 
+// Paleta nomeada do Todoist → hex (para colorir as etiquetas como no app).
+const TODOIST_COLORS: Record<string, string> = {
+  berry_red: "#B8255F", red: "#DB4035", orange: "#FF9933", yellow: "#FAD000",
+  olive_green: "#AFB83B", lime_green: "#7ECC49", green: "#299438", mint_green: "#6ACCBC",
+  teal: "#158FAD", sky_blue: "#14AAF5", light_blue: "#96C3EB", blue: "#4073FF",
+  grape: "#884DFF", violet: "#AF38EB", lavender: "#EB96EB", magenta: "#E05194",
+  salmon: "#FF8D85", charcoal: "#808080", grey: "#B8B8B8", taupe: "#CCAC93",
+};
+const LABEL_FALLBACK = "#B8B8B8";
+
 // Busca as tarefas ativas (não concluídas) via API unificada v1 (a REST v2 foi
 // aposentada → respondia 410). A v1 é paginada: { results, next_cursor }.
 async function fetchTodoistTasks(token: string): Promise<TodoistTask[]> {
@@ -149,6 +159,36 @@ async function fetchTodoistProjects(token: string): Promise<TodoistProject[]> {
 
     const data = res.json as { results?: TodoistProject[]; next_cursor?: string | null };
     if (Array.isArray(data)) { all.push(...(data as TodoistProject[])); cursor = null; }
+    else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
+  } while (cursor);
+  return all;
+}
+
+interface TodoistLabel {
+  id: string;
+  name: string;
+  color: string;   // nome da paleta (ex.: "charcoal")
+}
+
+// Busca as etiquetas pessoais (para colorir os chips). Mesma API v1 paginada.
+async function fetchTodoistLabels(token: string): Promise<TodoistLabel[]> {
+  const all: TodoistLabel[] = [];
+  let cursor: string | null = null;
+  do {
+    const url = new URL("https://api.todoist.com/api/v1/labels");
+    url.searchParams.set("limit", "200");
+    if (cursor) url.searchParams.set("cursor", cursor);
+
+    const res = await requestUrl({
+      url: url.toString(),
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      throw: false,
+    });
+    if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+
+    const data = res.json as { results?: TodoistLabel[]; next_cursor?: string | null };
+    if (Array.isArray(data)) { all.push(...(data as TodoistLabel[])); cursor = null; }
     else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
   } while (cursor);
   return all;
@@ -500,6 +540,7 @@ class DashboardView extends ItemView {
   private todoistTasks: TodoistTask[] = [];
   private todoistProjects: TodoistProject[] = [];
   private todoistProjectMap = new Map<string, string>();   // id → nome
+  private todoistLabelColor = new Map<string, string>();   // nome da etiqueta → hex
   private todoistLoading = false;
   private todoistError: string | null = null;
   private todoistFetchedAt = 0;
@@ -1496,7 +1537,7 @@ permissions:
       grp.createSpan({ cls: "wd-todo-flabel", text: "Etiquetas" });
       for (const l of labels) {
         const on = f.labels.includes(l);
-        const chip = grp.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: `@${l}` });
+        const chip = this.labelChip(grp, l, "wd-todo-fchip" + (on ? " wd-on" : ""));
         chip.onclick = async () => { this.toggleTodoFilter("labels", l); await this.plugin.saveSettings(); this.render(); };
       }
     }
@@ -1547,7 +1588,7 @@ permissions:
     const proj = t.project_id ? this.todoistProjectMap.get(t.project_id) : undefined;
     if (this.plugin.settings.todoistShowProject && proj) row.createSpan({ cls: "wd-todo-row-proj", text: proj });
     if (this.plugin.settings.todoistShowLabels)
-      for (const l of t.labels ?? []) row.createSpan({ cls: "wd-todo-row-label", text: `@${l}` });
+      for (const l of t.labels ?? []) this.labelChip(row, l, "wd-todo-row-label");
     const dk = dueKey(t);
     if (showDate && dk) {
       const [, m, d] = dk.split("-");
@@ -1570,13 +1611,14 @@ permissions:
   // Abre o formulário de tarefa (criar ou editar).
   private openTaskForm(opts: { mode: "create" | "edit"; task?: TodoistTask; prefillDue?: string }) {
     this.hideTip();
-    const labels = [...new Set(this.todoistTasks.flatMap(t => t.labels ?? []))].sort((a, b) => a.localeCompare(b));
+    const labels = [...new Set([...this.todoistLabelColor.keys(), ...this.todoistTasks.flatMap(t => t.labels ?? [])])].sort((a, b) => a.localeCompare(b));
     new TaskFormModal(this.app, {
       mode: opts.mode,
       task: opts.task,
       prefillDue: opts.prefillDue,
       projects: this.todoistProjects,
       labels,
+      labelColor: n => this.labelColor(n),
       submit: v => this.submitTaskForm(opts.mode, opts.task, v),
       remove: opts.task ? () => this.deleteTask(opts.task!) : undefined,
       complete: opts.task ? () => void this.completeTask(opts.task!) : undefined,
@@ -1589,6 +1631,7 @@ permissions:
     new TaskDetailModal(this.app, this, {
       task: t,
       projectName: t.project_id ? this.todoistProjectMap.get(t.project_id) : undefined,
+      labelColor: n => this.labelColor(n),
       edit: () => this.openTaskForm({ mode: "edit", task: t }),
       complete: () => void this.completeTask(t),
     }).open();
@@ -1679,14 +1722,16 @@ permissions:
     this.todoistError = null;
     if (manual) this.render();
     try {
-      // Projetos são para o filtro; se falharem, não derrubam as tarefas.
-      const [tasks, projects] = await Promise.all([
+      // Projetos/etiquetas são auxiliares; se falharem, não derrubam as tarefas.
+      const [tasks, projects, labels] = await Promise.all([
         fetchTodoistTasks(token),
         fetchTodoistProjects(token).catch(() => [] as TodoistProject[]),
+        fetchTodoistLabels(token).catch(() => [] as TodoistLabel[]),
       ]);
       this.todoistTasks = tasks;
       this.todoistProjects = projects;
       this.todoistProjectMap = new Map(projects.map(p => [p.id, p.name]));
+      this.todoistLabelColor = new Map(labels.map(l => [l.name, TODOIST_COLORS[l.color] ?? LABEL_FALLBACK]));
       this.todoistFetchedAt = Date.now();
     } catch (e) {
       this.todoistError = e instanceof Error ? e.message : String(e);
@@ -1701,10 +1746,24 @@ permissions:
     this.todoistTasks = [];
     this.todoistProjects = [];
     this.todoistProjectMap = new Map();
+    this.todoistLabelColor = new Map();
     this.todoistFetchedAt = 0;
     this.todoistError = null;
     this.todoistLoading = false;
     this.render();
+  }
+
+  // Cor (hex) de uma etiqueta pelo nome; cinza se desconhecida.
+  private labelColor(name: string): string {
+    return this.todoistLabelColor.get(name) ?? LABEL_FALLBACK;
+  }
+
+  // Cria um chip de etiqueta com bolinha colorida + "@nome".
+  private labelChip(host: HTMLElement, name: string, cls: string): HTMLElement {
+    const chip = host.createSpan({ cls });
+    chip.createSpan({ cls: "wd-label-dot" }).style.background = this.labelColor(name);
+    chip.createSpan({ text: `@${name}` });
+    return chip;
   }
 
   // ── Header ──────────────────────────────────────────────────────────────────
@@ -1789,6 +1848,7 @@ export default class WerusDashboard extends Plugin {
 interface TaskDetailOpts {
   task: TodoistTask;
   projectName?: string;
+  labelColor: (name: string) => string;
   edit: () => void;
   complete: () => void;
 }
@@ -1811,7 +1871,11 @@ class TaskDetailModal extends Modal {
       meta.createSpan({ cls: "wd-td-chip", text: `📅 ${d}/${m}/${y}${t.due?.is_recurring ? " ⟳" : ""}` });
     }
     if (this.opts.projectName) meta.createSpan({ cls: "wd-td-chip", text: `# ${this.opts.projectName}` });
-    for (const l of t.labels ?? []) meta.createSpan({ cls: "wd-td-chip", text: `@${l}` });
+    for (const l of t.labels ?? []) {
+      const chip = meta.createSpan({ cls: "wd-td-chip wd-td-label" });
+      chip.createSpan({ cls: "wd-label-dot" }).style.background = this.opts.labelColor(l);
+      chip.createSpan({ text: `@${l}` });
+    }
 
     if (hasDesc(t)) {
       const body = contentEl.createDiv({ cls: "wd-task-modal-desc markdown-rendered" });
@@ -1851,6 +1915,7 @@ interface TaskFormOpts {
   prefillDue?: string;
   projects: TodoistProject[];
   labels: string[];
+  labelColor: (name: string) => string;
   submit: (v: TaskFormValues) => Promise<boolean>;
   remove?: () => Promise<boolean>;
   complete?: () => void;
@@ -1929,31 +1994,25 @@ class TaskFormModal extends Modal {
 
     this.field("Etiquetas");
     const lwrap = contentEl.createDiv({ cls: "wd-tf-labels" });
-    const renderLabels = () => {
-      lwrap.empty();
-      for (const l of this.knownLabels) {
-        const on = this.v.labels.includes(l);
-        const chip = lwrap.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: `@${l}` });
-        chip.onclick = () => {
-          const i = this.v.labels.indexOf(l);
-          if (i >= 0) this.v.labels.splice(i, 1); else this.v.labels.push(l);
-          renderLabels();
-        };
-      }
-    };
-    renderLabels();
-    const ladd = contentEl.createEl("input", { cls: "wd-tf-input wd-tf-labeladd", type: "text" });
-    ladd.placeholder = "+ nova etiqueta (Enter)";
-    ladd.onkeydown = e => {
-      if (e.key !== "Enter") return;
-      e.preventDefault();
-      const name = ladd.value.trim().replace(/^@/, "");
-      if (!name) return;
-      if (!this.knownLabels.includes(name)) { this.knownLabels.push(name); this.knownLabels.sort((a, b) => a.localeCompare(b)); }
-      if (!this.v.labels.includes(name)) this.v.labels.push(name);
-      ladd.value = "";
+    if (this.knownLabels.length) {
+      const renderLabels = () => {
+        lwrap.empty();
+        for (const l of this.knownLabels) {
+          const on = this.v.labels.includes(l);
+          const chip = lwrap.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : "") });
+          chip.createSpan({ cls: "wd-label-dot" }).style.background = this.opts.labelColor(l);
+          chip.createSpan({ text: `@${l}` });
+          chip.onclick = () => {
+            const i = this.v.labels.indexOf(l);
+            if (i >= 0) this.v.labels.splice(i, 1); else this.v.labels.push(l);
+            renderLabels();
+          };
+        }
+      };
       renderLabels();
-    };
+    } else {
+      lwrap.createDiv({ cls: "wd-tf-hint", text: "Nenhuma etiqueta no Todoist ainda." });
+    }
 
     this.actionsEl = contentEl.createDiv({ cls: "wd-tf-actions" });
     this.renderActions();
