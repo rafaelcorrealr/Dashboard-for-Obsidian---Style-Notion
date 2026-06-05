@@ -37,6 +37,7 @@ com o que o usuário vê — por isso a correção.)
 | ESTATÍSTICAS | `stats` | Total de notas, % revisadas, criadas na semana, breakdown por pasta |
 | COFRE | `para` | Cards de todas as pastas de topo + navegador inline |
 | TAREFAS | `todoist` | Tarefas do Todoist em 3 caixas (Atrasadas · Hoje · Próximos N dias) + "Depois" (ler e concluir) |
+| SINCRONIZAÇÃO | `sync` | Saúde do Syncthing (pasta + aparelhos) via API + lista de conflitos |
 | ATIVIDADE DO COFRE | `heatmap` | Heatmap de notas criadas/dia via plugin Heatmap Calendar |
 | CRESCIMENTO DO COFRE | `growth` | Notas criadas/dia nos últimos 30 dias; modo cumulativo disponível |
 | RELATÓRIOS CLAUDE | `reports` | Últimos 6 relatórios Claude de `40.Archive/Relatórios Claude/` |
@@ -51,6 +52,13 @@ com o que o usuário vê — por isso a correção.)
 - **Configurações → Exibição das tarefas:** mostrar **projeto** e/ou **etiquetas** nas linhas (padrão: só projeto). As **etiquetas** aparecem com a **cor do Todoist** (bolinha colorida) aqui e no pop-up/filtros/formulário
 - Indicador `⟳` para tarefas recorrentes; botão `↻` de refresh manual; as 3 caixas empilham no celular
 - Requer o token pessoal do Todoist nas configurações do plugin (salvo em `data.json`, fora do Git)
+
+### Sincronização (Syncthing)
+- **Estado da pasta** (em dia / sincronizando / scanning / erro) e, por **aparelho**: online, **completação %**, pendências e **último visto** — via API REST do Syncthing
+- **Opção** "mostrar contagem de itens por aparelho" (`sincronizados/total`)
+- **Conflitos:** lista os `*.sync-conflict-*` do cofre com **abrir** e **apagar** (confirmação → lixeira do Obsidian)
+- Botão `↻` de refresh; se a API não responder, mostra aviso (não quebra)
+- **Configurações → Sincronização:** URL (default `http://127.0.0.1:8384`), API key (em `data.json`, fora do Git) e ID da pasta (vazio = autodetecta). No celular, aponte a URL para a API de outra máquina na rede se a local não responder
 
 ### Aviso de urgência
 - Notas com frontmatter `urgency: baixa | media | alta` acendem um ícone de aviso (`triangle-alert`) no card da pasta que as contém (propaga em qualquer nível, usa a maior urgência da subárvore)

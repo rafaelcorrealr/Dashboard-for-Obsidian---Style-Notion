@@ -6,6 +6,15 @@
 
 ---
 
+## [0.10.0] — alpha — 2026-06-04
+
+**Saúde do cofre: Sincronização (Syncthing) + Conflitos.** Nova seção **SINCRONIZAÇÃO** (id `sync`, reordenável/ocultável).
+
+- **Syncthing via API REST** (`X-API-Key`, mesmo padrão do Todoist — `requestUrl` ignora CORS): estado da pasta (em dia / sincronizando — N itens / scanning / erro) e, por **aparelho**, **online**, **completação %**, pendências (exclusões/bytes) e **último visto**. Botão **↻** (refresh manual; eventos em tempo real ficam para uma fase 2).
+- **Opção "mostrar contagem de itens por aparelho"** (Configurações): exibe `sincronizados/total` (`globalItems` da API — itens = arquivos + pastas).
+- **Conflitos:** lista os `*.sync-conflict-*` do cofre com **abrir** e **apagar** (confirmação em 2 passos → vai para a lixeira do Obsidian, recuperável).
+- **Configurações → Sincronização:** URL (default `http://127.0.0.1:8384`), API key (em `data.json`, fora do Git), ID da pasta (vazio = autodetecta) e o toggle de contagem. Se a API não responder, a seção mostra aviso e não quebra.
+
 ## [0.9.0] — alpha — 2026-06-04
 
 **Responsividade no celular.** Gated em `Platform.isPhone` → **desktop e tablet ficam idênticos**; só o celular muda.

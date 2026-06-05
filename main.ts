@@ -3,7 +3,7 @@ import { App, Component, ItemView, MarkdownRenderer, Modal, Notice, Platform, Pl
 const VIEW_TYPE = "werus-dashboard";
 
 type Status = "progress" | "paused" | "cancelled";
-type SectionId = "calendar" | "para" | "reports" | "heatmap" | "growth" | "stats" | "todoist";
+type SectionId = "calendar" | "para" | "reports" | "heatmap" | "growth" | "stats" | "todoist" | "sync";
 
 interface TodoistFilters {
   projects: string[];   // ids de projeto selecionados (vazio = todos)
@@ -20,10 +20,14 @@ interface DashSettings {
   todoistFilters: TodoistFilters;
   todoistShowProject: boolean;   // mostrar o nome do projeto nas linhas
   todoistShowLabels: boolean;    // mostrar as etiquetas nas linhas
+  syncthingUrl: string;          // base da API REST do Syncthing
+  syncthingApiKey: string;       // X-API-Key (fora do Git)
+  syncthingFolderId: string;     // id da pasta; vazio = autodetecta
+  syncthingShowCounts: boolean;  // mostrar "sincronizados / total" de itens por aparelho
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
-  sectionOrder: ["stats", "todoist", "para", "heatmap", "growth", "reports", "calendar"],
+  sectionOrder: ["stats", "todoist", "para", "sync", "heatmap", "growth", "reports", "calendar"],
   compact: false,
   hidden: [],
   noteView: "list",
@@ -32,6 +36,10 @@ const DEFAULT_SETTINGS: DashSettings = {
   todoistFilters: { projects: [], labels: [] },
   todoistShowProject: true,
   todoistShowLabels: false,
+  syncthingUrl: "http://127.0.0.1:8384",
+  syncthingApiKey: "",
+  syncthingFolderId: "",
+  syncthingShowCounts: false,
 };
 
 interface ParaSection {
@@ -74,6 +82,7 @@ const SEC_HEAT = "sec:heatmap";
 const SEC_GROW = "sec:growth";
 const SEC_STAT = "sec:stats";
 const SEC_TODO = "sec:todoist";
+const SEC_SYNC = "sec:sync";
 
 // ── Todoist ─────────────────────────────────────────────────────────────────
 
@@ -192,6 +201,42 @@ async function fetchTodoistLabels(token: string): Promise<TodoistLabel[]> {
     else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
   } while (cursor);
   return all;
+}
+
+// ── Syncthing (API REST) — v0.10.0 ───────────────────────────────────────────
+
+interface STFolder { id: string; label: string; path: string; paused: boolean }
+interface STDevice { deviceID: string; name: string }
+interface STStatus { state: string; needFiles: number; needBytes: number; errors: number; pullErrors: number }
+interface STCompletion { completion: number; globalItems: number; needItems: number; needBytes: number; needDeletes: number }
+
+interface SyncDevRow { name: string; online: boolean; completion: number; globalItems: number; needItems: number; needBytes: number; needDeletes: number; lastSeen: string }
+interface SyncData { state: string; needFiles: number; needBytes: number; folderLabel: string; errors: number; devices: SyncDevRow[] }
+
+function humanBytes(n: number): string {
+  if (!n) return "0 B";
+  if (n < 1024) return `${n} B`;
+  if (n < 1048576) return `${(n / 1024).toFixed(n < 10240 ? 1 : 0)} KB`;
+  return `${(n / 1048576).toFixed(n < 10485760 ? 1 : 0)} MB`;
+}
+
+function relTime(iso: string): string {
+  const t = Date.parse(iso);
+  if (isNaN(t) || t < 1) return "—";
+  const s = Math.floor((Date.now() - t) / 1000);
+  if (s < 60) return "agora";
+  if (s < 3600) return `há ${Math.floor(s / 60)} min`;
+  if (s < 86400) return `há ${Math.floor(s / 3600)} h`;
+  return `há ${Math.floor(s / 86400)} d`;
+}
+
+// GET genérico na API do Syncthing (header X-API-Key; requestUrl ignora CORS).
+async function stGet<T>(base: string, key: string, path: string): Promise<T> {
+  const url = base.replace(/\/+$/, "") + path;
+  const res = await requestUrl({ url, method: "GET", headers: { "X-API-Key": key }, throw: false });
+  if (res.status === 401 || res.status === 403) throw new Error("API key inválida (401/403)");
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+  return res.json as T;
 }
 
 // URL para abrir a tarefa no Todoist (usa a do payload ou monta a partir do id).
@@ -547,6 +592,13 @@ class DashboardView extends ItemView {
   private todoistLaterOpen = false;
   private todoistFilterOpen = false;
 
+  // Estado do Syncthing (v0.10.0)
+  private syncData: SyncData | null = null;
+  private syncLoading = false;
+  private syncError: string | null = null;
+  private syncFetchedAt = 0;
+  private conflictConfirm: string | null = null;   // path do conflito aguardando confirmação
+
   constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) { super(leaf); }
 
   getViewType()    { return VIEW_TYPE; }
@@ -588,6 +640,7 @@ class DashboardView extends ItemView {
       else if (id === "growth")  this.renderGrowth(root);
       else if (id === "stats")   this.renderStats(root);
       else if (id === "todoist") this.renderTodoist(root);
+      else if (id === "sync")    this.renderSync(root);
     }
   }
 
@@ -1806,6 +1859,159 @@ permissions:
     this.render();
   }
 
+  // ── Sincronização (Syncthing + conflitos) — v0.10.0 ───────────────────────
+
+  resetSync() {
+    this.syncData = null;
+    this.syncFetchedAt = 0;
+    this.syncError = null;
+    this.syncLoading = false;
+    this.render();
+  }
+
+  private async fetchSync(manual: boolean) {
+    const base = this.plugin.settings.syncthingUrl.trim();
+    const key = this.plugin.settings.syncthingApiKey.trim();
+    if (!base || !key || this.syncLoading) return;
+    this.syncLoading = true;
+    this.syncError = null;
+    if (manual) this.render();
+    try {
+      const folders = await stGet<STFolder[]>(base, key, "/rest/config/folders");
+      const wanted = this.plugin.settings.syncthingFolderId.trim();
+      const folder = folders.find(f => f.id === wanted) ?? folders[0];
+      if (!folder) throw new Error("nenhuma pasta configurada no Syncthing");
+      const fid = encodeURIComponent(folder.id);
+
+      const [devices, conns, status, stats, sys] = await Promise.all([
+        stGet<STDevice[]>(base, key, "/rest/config/devices"),
+        stGet<{ connections: Record<string, { connected: boolean }> }>(base, key, "/rest/system/connections"),
+        stGet<STStatus>(base, key, `/rest/db/status?folder=${fid}`),
+        stGet<Record<string, { lastSeen: string }>>(base, key, "/rest/stats/device").catch(() => ({} as Record<string, { lastSeen: string }>)),
+        stGet<{ myID: string }>(base, key, "/rest/system/status"),
+      ]);
+
+      const remote = devices.filter(d => d.deviceID !== sys.myID);
+      const rows = await Promise.all(remote.map(async d => {
+        const c = await stGet<STCompletion>(base, key, `/rest/db/completion?folder=${fid}&device=${d.deviceID}`)
+          .catch(() => ({ completion: 0, globalItems: 0, needItems: 0, needBytes: 0, needDeletes: 0 }));
+        return {
+          name: d.name || d.deviceID.slice(0, 7),
+          online: !!conns.connections[d.deviceID]?.connected,
+          completion: c.completion,
+          globalItems: c.globalItems ?? 0,
+          needItems: c.needItems ?? 0,
+          needBytes: c.needBytes,
+          needDeletes: c.needDeletes,
+          lastSeen: stats[d.deviceID]?.lastSeen ?? "",
+        };
+      }));
+
+      this.syncData = {
+        state: status.state,
+        needFiles: status.needFiles,
+        needBytes: status.needBytes,
+        folderLabel: folder.label || folder.id,
+        errors: (status.errors ?? 0) + (status.pullErrors ?? 0),
+        devices: rows,
+      };
+      this.syncFetchedAt = Date.now();
+    } catch (e) {
+      this.syncError = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.syncLoading = false;
+      this.render();
+    }
+  }
+
+  private renderSync(root: HTMLElement) {
+    if (this.isHidden(SEC_SYNC)) return;
+
+    const sec = root.createDiv({ cls: "wd-section wd-sync-section" });
+    const head = sec.createDiv({ cls: "wd-sec-head" });
+    head.createDiv({ cls: "wd-sec-label", text: "SINCRONIZAÇÃO" });
+    const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
+    const key = this.plugin.settings.syncthingApiKey.trim();
+    if (key) {
+      const refresh = ctrls.createSpan({ cls: "wd-todo-refresh" + (this.syncLoading ? " wd-spin" : "") });
+      setIcon(refresh, "refresh-cw");
+      refresh.setAttr("title", "Atualizar estado do Syncthing");
+      refresh.onclick = e => { e.stopPropagation(); void this.fetchSync(true); };
+    }
+    this.moveControls(ctrls, "sync");
+    this.hideBtn(ctrls, SEC_SYNC, "Ocultar sincronização", "wd-sec-hide");
+
+    if (!key) {
+      sec.createDiv({ cls: "wd-empty", text: "Configure a URL e a API key do Syncthing em Configurações → Werus Dashboard." });
+    } else if (this.syncError) {
+      sec.createDiv({ cls: "wd-empty wd-todo-error", text: `Erro ao falar com o Syncthing: ${this.syncError}` });
+    } else if (!this.syncFetchedAt) {
+      if (!this.syncLoading) void this.fetchSync(false);
+      sec.createDiv({ cls: "wd-empty", text: "Carregando…" });
+    } else {
+      this.renderSyncBody(sec, this.syncData!);
+    }
+
+    this.renderConflicts(sec);
+  }
+
+  private renderSyncBody(sec: HTMLElement, d: SyncData) {
+    const box = sec.createDiv({ cls: "wd-sync-box" });
+
+    // Estado da pasta.
+    const busy = d.state === "syncing" || d.state === "scanning";
+    const fl = box.createDiv({ cls: "wd-sync-folder" });
+    const dot = fl.createSpan({ cls: "wd-sync-dot " + (d.errors ? "wd-s-err" : busy ? "wd-s-busy" : "wd-s-ok") });
+    dot.setText(d.errors ? "⚠" : busy ? "⟳" : "●");
+    fl.createSpan({ cls: "wd-sync-fname", text: d.folderLabel });
+    const st = d.state === "idle" ? "em dia" : d.state === "syncing" ? `sincronizando — ${d.needFiles} itens (${humanBytes(d.needBytes)})` : d.state;
+    fl.createSpan({ cls: "wd-sync-fstate", text: st });
+
+    // Aparelhos.
+    for (const dev of d.devices) {
+      const row = box.createDiv({ cls: "wd-sync-dev" });
+      const o = row.createSpan({ cls: "wd-sync-dot " + (dev.online ? "wd-s-ok" : "wd-s-off") });
+      o.setText("●");
+      row.createSpan({ cls: "wd-sync-dname", text: dev.name });
+      row.createSpan({ cls: "wd-sync-dcomp", text: `${Math.round(dev.completion)}%` });
+      if (this.plugin.settings.syncthingShowCounts && dev.globalItems)
+        row.createSpan({ cls: "wd-sync-dcount", text: `${dev.globalItems - dev.needItems}/${dev.globalItems}` });
+      const extra = dev.needDeletes ? `${dev.needDeletes} exclusões` : dev.needBytes ? humanBytes(dev.needBytes) : "";
+      if (extra) row.createSpan({ cls: "wd-sync-dpend", text: extra });
+      row.createSpan({ cls: "wd-sync-dseen", text: dev.online ? "online" : relTime(dev.lastSeen) });
+    }
+
+    if (d.errors) box.createDiv({ cls: "wd-sync-errline", text: `⚠ ${d.errors} erro(s) na pasta` });
+  }
+
+  // Lista de cópias de conflito do Syncthing (abrir / apagar com confirmação).
+  private renderConflicts(sec: HTMLElement) {
+    const conflicts = this.app.vault.getFiles().filter(f => f.name.includes(".sync-conflict-"));
+    const wrap = sec.createDiv({ cls: "wd-sync-conflicts" });
+    wrap.createDiv({ cls: "wd-sync-sub", text: `Conflitos (${conflicts.length})` });
+    if (!conflicts.length) {
+      wrap.createDiv({ cls: "wd-sync-noconf", text: "Nenhum conflito. 🎉" });
+      return;
+    }
+    for (const f of conflicts) {
+      const row = wrap.createDiv({ cls: "wd-sync-crow" });
+      const name = row.createSpan({ cls: "wd-sync-cname", text: f.name });
+      name.setAttr("title", "Abrir " + f.path);
+      name.onclick = () => this.app.workspace.getLeaf(false).openFile(f);
+      if (this.conflictConfirm === f.path) {
+        const yes = row.createSpan({ cls: "wd-sync-cyes", text: "apagar?" });
+        yes.onclick = async () => { await this.app.vault.trash(f, false); this.conflictConfirm = null; this.render(); };
+        const no = row.createSpan({ cls: "wd-sync-cno", text: "cancelar" });
+        no.onclick = () => { this.conflictConfirm = null; this.render(); };
+      } else {
+        const del = row.createSpan({ cls: "wd-sync-cdel" });
+        setIcon(del, "trash-2");
+        del.setAttr("title", "Apagar cópia de conflito (vai para a lixeira)");
+        del.onclick = () => { this.conflictConfirm = f.path; this.render(); };
+      }
+    }
+  }
+
   // Cor (hex) de uma etiqueta pelo nome; cinza se desconhecida.
   private labelColor(name: string): string {
     return this.todoistLabelColor.get(name) ?? LABEL_FALLBACK;
@@ -1861,10 +2067,18 @@ export default class WerusDashboard extends Plugin {
     }
   }
 
+  // Reseta o estado do Syncthing em todas as dashboards (ex.: token/URL alterados).
+  refreshSync() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      const v = leaf.view;
+      if (v instanceof DashboardView) v.resetSync();
+    }
+  }
+
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     // Saneamento: sectionOrder com exatamente as seções válidas, sem duplicatas.
-    const valid: SectionId[] = ["stats", "todoist", "para", "heatmap", "growth", "reports", "calendar"];
+    const valid: SectionId[] = ["stats", "todoist", "para", "sync", "heatmap", "growth", "reports", "calendar"];
     const seen = new Set<SectionId>();
     const cleaned = (this.settings.sectionOrder || []).filter(
       (s): s is SectionId => valid.includes(s as SectionId) && !seen.has(s as SectionId) && (seen.add(s as SectionId), true)
@@ -1882,6 +2096,12 @@ export default class WerusDashboard extends Plugin {
     // Exibição nas linhas (v0.8.0).
     this.settings.todoistShowProject = this.settings.todoistShowProject !== false;
     this.settings.todoistShowLabels = this.settings.todoistShowLabels === true;
+    // Syncthing (v0.10.0).
+    if (typeof this.settings.syncthingUrl !== "string" || !this.settings.syncthingUrl.trim())
+      this.settings.syncthingUrl = "http://127.0.0.1:8384";
+    if (typeof this.settings.syncthingApiKey !== "string") this.settings.syncthingApiKey = "";
+    if (typeof this.settings.syncthingFolderId !== "string") this.settings.syncthingFolderId = "";
+    this.settings.syncthingShowCounts = this.settings.syncthingShowCounts === true;
   }
 
   async saveSettings() { await this.saveData(this.settings); }
@@ -2167,6 +2387,62 @@ class WerusSettingTab extends PluginSettingTab {
           this.plugin.settings.todoistShowLabels = v;
           await this.plugin.saveSettings();
           this.plugin.refreshDashboards();
+        }));
+
+    containerEl.createEl("h3", { text: "Sincronização (Syncthing)" });
+
+    new Setting(containerEl)
+      .setName("URL da API")
+      .setDesc("Endereço do Syncthing. Padrão: http://127.0.0.1:8384 (a instância local). No celular, aponte para a API de outra máquina na rede se a local não responder.")
+      .addText(t => {
+        t.setPlaceholder("http://127.0.0.1:8384")
+          .setValue(this.plugin.settings.syncthingUrl)
+          .onChange(async v => {
+            this.plugin.settings.syncthingUrl = v.trim() || "http://127.0.0.1:8384";
+            await this.plugin.saveSettings();
+            this.plugin.refreshSync();
+          });
+        t.inputEl.style.width = "100%";
+      });
+
+    new Setting(containerEl)
+      .setName("API key")
+      .setDesc("Syncthing → Actions → Settings → API Key. Salva localmente em data.json (não vai para o Git).")
+      .addText(t => {
+        t.setPlaceholder("cole a API key")
+          .setValue(this.plugin.settings.syncthingApiKey)
+          .onChange(async v => {
+            this.plugin.settings.syncthingApiKey = v.trim();
+            await this.plugin.saveSettings();
+            this.plugin.refreshSync();
+          });
+        t.inputEl.type = "password";
+        t.inputEl.style.width = "100%";
+      });
+
+    new Setting(containerEl)
+      .setName("ID da pasta (opcional)")
+      .setDesc("Folder ID do cofre no Syncthing. Vazio = usa a primeira pasta automaticamente.")
+      .addText(t => {
+        t.setPlaceholder("ex.: nunqv-mtimn")
+          .setValue(this.plugin.settings.syncthingFolderId)
+          .onChange(async v => {
+            this.plugin.settings.syncthingFolderId = v.trim();
+            await this.plugin.saveSettings();
+            this.plugin.refreshSync();
+          });
+        t.inputEl.style.width = "100%";
+      });
+
+    new Setting(containerEl)
+      .setName("Mostrar contagem de itens por aparelho")
+      .setDesc("Exibe \"sincronizados / total\" de itens em cada aparelho, além da porcentagem.")
+      .addToggle(t => t
+        .setValue(this.plugin.settings.syncthingShowCounts)
+        .onChange(async v => {
+          this.plugin.settings.syncthingShowCounts = v;
+          await this.plugin.saveSettings();
+          this.plugin.refreshSync();
         }));
   }
 }

@@ -1744,3 +1744,66 @@ body {
 .is-phone .wd-move-btn,
 .is-phone .wd-todo-refresh,
 .is-phone .wd-todo-filterbtn { padding: 6px 9px; }
+
+/* ── Seção SINCRONIZAÇÃO (Syncthing + conflitos) — v0.10.0 ──────────────────── */
+.wd-sync-box {
+  background: var(--wd-surface);
+  border: 1px solid var(--wd-border);
+  border-radius: 10px;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wd-sync-dot { flex-shrink: 0; font-size: 11px; width: 14px; text-align: center; }
+.wd-s-ok   { color: #10B981; }
+.wd-s-busy { color: #F59E0B; }
+.wd-s-err  { color: #EF4444; }
+.wd-s-off  { color: var(--wd-text-faint); }
+
+.wd-sync-folder { display: flex; align-items: center; gap: 7px; padding-bottom: 6px; border-bottom: 1px solid var(--wd-border); }
+.wd-sync-fname { font-weight: 600; color: var(--wd-text); }
+.wd-sync-fstate { font-size: 12px; color: var(--wd-text-muted); margin-left: auto; }
+
+.wd-sync-dev { display: flex; align-items: center; gap: 8px; font-size: 13px; }
+.wd-sync-dname { color: var(--wd-text); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wd-sync-dcomp { font-family: var(--font-monospace, monospace); font-size: 12px; color: var(--wd-text-muted); }
+.wd-sync-dcount {
+  font-family: var(--font-monospace, monospace);
+  font-size: 10px;
+  color: var(--wd-text-faint);
+  background: var(--wd-fill);
+  border-radius: 9px;
+  padding: 1px 7px;
+  flex-shrink: 0;
+}
+.wd-sync-dpend {
+  font-size: 10px; color: #F59E0B;
+  background: rgba(245, 158, 11, 0.12);
+  border-radius: 10px; padding: 1px 7px; flex-shrink: 0;
+}
+.wd-sync-dseen { font-size: 11px; color: var(--wd-text-faint); min-width: 64px; text-align: right; }
+.wd-sync-errline { font-size: 12px; color: #EF4444; margin-top: 2px; }
+
+/* Conflitos */
+.wd-sync-conflicts { margin-top: 12px; }
+.wd-sync-sub {
+  font-family: var(--font-monospace, monospace);
+  font-size: 9px; letter-spacing: 2px; text-transform: uppercase;
+  color: var(--wd-text-faint); margin-bottom: 6px;
+}
+.wd-sync-noconf { font-size: 12px; color: var(--wd-text-faint); }
+.wd-sync-crow {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 6px;
+  border: 1px solid rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.06);
+  margin-bottom: 4px;
+}
+.wd-sync-cname { flex: 1; min-width: 0; font-size: 12px; color: var(--wd-text); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.wd-sync-cname:hover { color: var(--wd-accent); }
+.wd-sync-cdel { display: inline-flex; color: var(--wd-text-faint); cursor: pointer; flex-shrink: 0; }
+.wd-sync-cdel:hover { color: #EF4444; }
+.wd-sync-cdel svg { width: 14px; height: 14px; }
+.wd-sync-cyes { font-size: 11px; color: #fff; background: #EF4444; border-radius: 5px; padding: 2px 8px; cursor: pointer; flex-shrink: 0; }
+.wd-sync-cno { font-size: 11px; color: var(--wd-text-muted); cursor: pointer; flex-shrink: 0; }
