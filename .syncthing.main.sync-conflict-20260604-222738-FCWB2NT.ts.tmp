@@ -1,4 +1,4 @@
-import { App, Component, ItemView, MarkdownRenderer, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
+import { App, Component, ItemView, MarkdownRenderer, Modal, Notice, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
 
 const VIEW_TYPE = "werus-dashboard";
 
@@ -762,19 +762,7 @@ class DashboardView extends ItemView {
 
     const sec = root.createDiv({ cls: "wd-section wd-cal-section" });
     const nav = sec.createDiv({ cls: "wd-cal-nav-bar" });
-    const phone = Platform.isPhone;
-
-    // Celular: janela de 3 dias = ontem · hoje · amanhã (weekOffset pagina de 3 em 3).
-    const dayAnchor = new Date();
-    dayAnchor.setDate(dayAnchor.getDate() - 1 + this.weekOffset * 3);
-    const fmtDM = (d: Date) => `${String(d.getDate()).padStart(2, "0")}/${String(d.getMonth() + 1).padStart(2, "0")}`;
-
-    if (phone) {
-      const last = new Date(dayAnchor); last.setDate(dayAnchor.getDate() + 2);
-      nav.createSpan({ cls: "wd-cal-week-label", text: `${fmtDM(dayAnchor)} – ${fmtDM(last)}` });
-    } else {
-      nav.createSpan({ cls: "wd-cal-week-label", text: `Semana ${weekNum}` });
-    }
+    nav.createSpan({ cls: "wd-cal-week-label", text: `Semana ${weekNum}` });
 
     const ctrls = nav.createDiv({ cls: "wd-cal-ctrls" });
     const prev = ctrls.createSpan({ cls: "wd-cal-arrow", text: "‹" });
@@ -784,37 +772,6 @@ class DashboardView extends ItemView {
     this.moveControls(ctrls, "calendar");
     this.hideBtn(ctrls, SEC_CAL, "Ocultar calendário", "wd-sec-hide");
 
-    // ── Celular: lista vertical de 3 dias (ontem/hoje/amanhã) ───────────────
-    // Cada dia = a nota diária (uma por dia). Linha inteira clicável: abre a
-    // existente; se não houver, cria.
-    if (phone) {
-      const list = sec.createDiv({ cls: "wd-cal-list" });
-      for (let i = 0; i < 3; i++) {
-        const day = new Date(dayAnchor);
-        day.setDate(dayAnchor.getDate() + i);
-        const key = toKey(day);
-        const dow = (day.getDay() + 6) % 7;
-        const note = this.findDailyNote(key);
-        const row = list.createDiv({
-          cls: ["wd-cal-drow", key === todayK ? "wd-today" : "", dow >= 5 ? "wd-weekend" : ""].filter(Boolean).join(" "),
-        });
-        row.setAttr("title", note ? "Abrir nota diária" : "Criar nota diária");
-        const hd = row.createDiv({ cls: "wd-cal-drow-hd" });
-        hd.createSpan({ cls: "wd-cal-name", text: DAY_SHORT[dow] });
-        hd.createSpan({ cls: "wd-cal-num", text: String(day.getDate()) });
-        const body = row.createDiv({ cls: "wd-cal-drow-notes" });
-        if (note) {
-          const pill = body.createDiv({ cls: "wd-cal-pill" });
-          pill.textContent = note.basename.length > 24 ? note.basename.slice(0, 24) + "…" : note.basename;
-        } else {
-          body.createSpan({ cls: "wd-cal-drow-empty", text: "criar nota diária" });
-        }
-        row.onclick = () => void this.openDailyNote(key);
-      }
-      return;
-    }
-
-    // ── Desktop/tablet: grade de 7 dias ─────────────────────────────────────
     const grid = sec.createDiv({ cls: "wd-cal-grid" });
     for (let i = 0; i < 7; i++) {
       const day = new Date(monday);
@@ -849,41 +806,30 @@ class DashboardView extends ItemView {
     });
   }
 
-  // Acha a nota diária de `key` (YYYY-MM-DD): primeiro pelo caminho canônico em
-  // 50.Diário/, senão qualquer nota cujo `date:` seja esse dia. Null se não houver.
-  // (Relatório/nota diária é um por dia → abre o existente em vez de criar outro.)
-  private findDailyNote(key: string): TFile | null {
-    const direct = this.app.vault.getAbstractFileByPath(`${DAILY_FOLDER}/${key}.md`);
-    if (direct instanceof TFile) return direct;
-    for (const f of this.app.vault.getMarkdownFiles()) {
-      if (normalizeDate(this.app.metadataCache.getCache(f.path)?.frontmatter?.date) === key) return f;
-    }
-    return null;
-  }
-
-  // Abre a nota diária de `key`; cria em 50.Diário/ SÓ se não existir nenhuma.
+  // Abre a nota diária de `key` (YYYY-MM-DD); cria em 50.Diário/ se não existir.
   private async openDailyNote(key: string) {
-    const existing = this.findDailyNote(key);
-    if (existing) { await this.app.workspace.getLeaf(false).openFile(existing); return; }
+    const path = `${DAILY_FOLDER}/${key}.md`;
+    let file = this.app.vault.getAbstractFileByPath(path);
 
-    // Não existe → cria no caminho canônico.
-    if (!this.app.vault.getAbstractFileByPath(DAILY_FOLDER))
-      await this.app.vault.createFolder(DAILY_FOLDER).catch(() => {});
+    if (!(file instanceof TFile)) {
+      // Garante a pasta raiz (caso tenha sido removida).
+      if (!this.app.vault.getAbstractFileByPath(DAILY_FOLDER))
+        await this.app.vault.createFolder(DAILY_FOLDER).catch(() => {});
 
-    const [y, m, d] = key.split("-");
-    const titulo = new Date(+y, +m - 1, +d).toLocaleDateString("pt-BR", {
-      weekday: "long", day: "numeric", month: "long", year: "numeric",
-    });
+      const [y, m, d] = key.split("-");
+      const titulo = new Date(+y, +m - 1, +d).toLocaleDateString("pt-BR", {
+        weekday: "long", day: "numeric", month: "long", year: "numeric",
+      });
 
-    // Usa o template em Modelos/ se existir; senão, fallback embutido.
-    const tpl = this.app.vault.getAbstractFileByPath(DAILY_TEMPLATE);
-    let body: string;
-    if (tpl instanceof TFile) {
-      body = (await this.app.vault.read(tpl))
-        .replace(/\{\{\s*date\s*\}\}/g, key)
-        .replace(/\{\{\s*title\s*\}\}/g, titulo);
-    } else {
-      body =
+      // Usa o template em Modelos/ se existir; senão, fallback embutido.
+      const tpl = this.app.vault.getAbstractFileByPath(DAILY_TEMPLATE);
+      let body: string;
+      if (tpl instanceof TFile) {
+        body = (await this.app.vault.read(tpl))
+          .replace(/\{\{\s*date\s*\}\}/g, key)
+          .replace(/\{\{\s*title\s*\}\}/g, titulo);
+      } else {
+        body =
 `---
 owner: Werus
 created: ${key}
@@ -899,8 +845,10 @@ permissions:
 # ${titulo}
 
 `;
+      }
+      file = await this.app.vault.create(path, body);
     }
-    const file = await this.app.vault.create(`${DAILY_FOLDER}/${key}.md`, body);
+
     if (file instanceof TFile) await this.app.workspace.getLeaf(false).openFile(file);
   }
 
@@ -1133,7 +1081,6 @@ permissions:
 
   private renderHeatmap(root: HTMLElement) {
     if (this.isHidden(SEC_HEAT)) return;
-    if (Platform.isPhone) return;   // heatmap (ano inteiro) ocultado no celular
 
     const sec = root.createDiv({ cls: "wd-section wd-heat-section" });
     const head = sec.createDiv({ cls: "wd-sec-head" });
@@ -1337,8 +1284,8 @@ permissions:
       counts[key] = (counts[key] ?? 0) + 1;
     }
 
-    // Últimos N dias (menos no celular)
-    const DAYS = Platform.isPhone ? 15 : 30;
+    // Últimos 30 dias
+    const DAYS = 30;
     const days: { key: string; count: number; label: string }[] = [];
     for (let i = DAYS - 1; i >= 0; i--) {
       const d = new Date();
@@ -1365,7 +1312,7 @@ permissions:
     // Linha de resumo
     const info = sec.createDiv({ cls: "wd-growth-info" });
     info.createSpan({ cls: "wd-growth-total", text: `${this.growthCumulative ? entries[entries.length - 1].displayVal : total}` });
-    info.createSpan({ cls: "wd-growth-period", text: this.growthCumulative ? `notas acumuladas (${DAYS} dias)` : `notas criadas nos últimos ${DAYS} dias` });
+    info.createSpan({ cls: "wd-growth-period", text: this.growthCumulative ? "notas acumuladas (30 dias)" : "notas criadas nos últimos 30 dias" });
 
     // Gráfico de barras
     const chart = sec.createDiv({ cls: "wd-growth-chart" });

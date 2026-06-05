@@ -1,12 +1,9 @@
 /* ── Tema (v0.8.0) — tokens que seguem o tema do Obsidian (claro/escuro) ──────
-   Mapeiam os neutros do dashboard para variáveis do Obsidian. Definidos no
-   **body** (não no :root): é onde o Obsidian define as variáveis de tema
-   (--interactive-accent, --background-secondary-alt, etc.) — no :root elas não
-   existem e os tokens virariam inválidos (barras/tooltips transparentes). O body
-   alcança tanto o dashboard quanto os tooltips/modais (criados em document.body).
-   As cores semânticas (prioridade, urgência, etiquetas, vermelho das Atrasadas)
-   NÃO usam estes tokens — ficam fixas/translúcidas. */
-body {
+   Mapeiam os neutros do dashboard para variáveis do Obsidian. Definidos no :root
+   para alcançar também os tooltips (criados em document.body). As cores
+   semânticas (prioridade, urgência, etiquetas, vermelho das Atrasadas) NÃO usam
+   estes tokens — ficam fixas/translúcidas. */
+:root {
   --wd-bg: var(--background-primary);
   /* "-alt" pode não existir em alguns temas → fallback para a base (evita
      fundo transparente, ex.: tooltips/preview ficando ilegíveis). */
@@ -374,36 +371,6 @@ body {
   text-align: center;
   margin-top: 6px;
 }
-
-/* Calendário em lista de 3 dias (só no celular) */
-.wd-cal-list { display: flex; flex-direction: column; gap: 6px; }
-.wd-cal-drow {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 11px;
-  border: 1px solid var(--wd-border);
-  border-radius: 8px;
-  background: var(--wd-surface);
-  cursor: pointer;
-  transition: background 0.15s, border-color 0.15s;
-}
-.wd-cal-drow:hover { background: var(--wd-hover); }
-.wd-cal-drow.wd-today { border-color: var(--wd-accent); background: var(--wd-surface-2); }
-.wd-cal-drow.wd-weekend { background: var(--wd-bg-alt); }
-.wd-cal-drow-hd {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  min-width: 38px;
-  line-height: 1.2;
-  cursor: pointer;
-  padding: 2px 0;
-}
-.wd-cal-drow.wd-today .wd-cal-name { color: var(--wd-accent); }
-.wd-cal-drow.wd-today .wd-cal-num { color: var(--wd-text); }
-.wd-cal-drow-notes { display: flex; flex-direction: column; gap: 3px; flex: 1; min-width: 0; }
-.wd-cal-drow-empty { color: var(--wd-text-faint); font-size: 12px; padding: 2px 0; }
 
 /* ── Cards base ───────────────────────────────────────────────────────────── */
 .wd-card {
@@ -1731,16 +1698,3 @@ body {
   /* Capa dos cards um pouco menor pra ganhar densidade vertical */
   .wd-cover { height: 76px; }
 }
-
-/* ── Celular (Platform.isPhone → body.is-phone): toque + rodapé — v0.9.0 ────── */
-.is-phone .wd-root { padding-bottom: 80px; }                 /* botões touch não colam no rodapé */
-.is-phone .wd-todo-add { width: 28px; height: 28px; }
-.is-phone .wd-todo-add svg { width: 20px; height: 20px; }
-.is-phone .wd-cal-arrow { padding: 8px 16px; font-size: 20px; }
-.is-phone .wd-todo-check { width: 18px; height: 18px; }
-.is-phone .wd-todo-row { padding: 8px; }
-.is-phone .wd-cal-pill { padding: 5px 8px; }
-.is-phone .wd-sec-hide,
-.is-phone .wd-move-btn,
-.is-phone .wd-todo-refresh,
-.is-phone .wd-todo-filterbtn { padding: 6px 9px; }

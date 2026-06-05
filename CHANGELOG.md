@@ -6,6 +6,17 @@
 
 ---
 
+## [0.9.0] — alpha — 2026-06-04
+
+**Responsividade no celular.** Gated em `Platform.isPhone` → **desktop e tablet ficam idênticos**; só o celular muda.
+
+- **Calendário no celular** → lista vertical de **3 dias (ontem · hoje · amanhã)**, navegável pelas setas (paginam de 3 em 3). Cada dia mostra **uma nota diária** (um por dia, sem listar vários arquivos); a **linha inteira** é clicável.
+- **Abrir em vez de criar:** clicar num dia abre a nota diária **existente** (achada pelo caminho `50.Diário/AAAA-MM-DD.md` **ou** por qualquer nota com `date:` daquele dia); só cria se não houver. Vale também no desktop (`findDailyNote`).
+- **Heatmap oculto** no celular (o plugin só renderiza o ano inteiro).
+- **Crescimento: 15 dias** no celular (era 30).
+- **Toque:** `padding-bottom` no rodapé + alvos maiores (`.is-phone`: "+", setas, checkbox, ocultar/refresh/filtro).
+- **Correção (regressão da v0.8.0):** os tokens `--wd-*` foram movidos de `:root` → `body`. O Obsidian define `--interactive-accent`/`--background-secondary-alt` etc. só no `body`; no `:root` viravam inválidos e deixavam **transparentes** as barras do **Crescimento** (e antes o tooltip).
+
 ## [0.8.0] — alpha — 2026-06-04
 
 **Tema claro automático.** O dashboard agora **segue o tema do Obsidian** (claro/escuro) sozinho, sem botão.
