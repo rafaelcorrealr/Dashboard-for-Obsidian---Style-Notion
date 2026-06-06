@@ -3,18 +3,27 @@ import { App, Component, ItemView, MarkdownRenderer, Modal, Notice, Platform, Pl
 const VIEW_TYPE = "werus-dashboard";
 
 type Status = "progress" | "paused" | "cancelled";
-type SectionId = "calendar" | "para" | "reports" | "heatmap" | "growth" | "stats" | "todoist" | "sync";
+type SectionId = "calendar" | "para" | "heatmap" | "growth" | "stats" | "todoist" | "sync";
 
 interface TodoistFilters {
   projects: string[];   // ids de projeto selecionados (vazio = todos)
   labels: string[];     // nomes de etiqueta selecionados (vazio = todas)
 }
 
+// Fonte de cards da Semana: uma pasta do cofre + cor + se está visível.
+// As notas dentro dela aparecem nos dias do calendário (posição pelo `date:`).
+interface CalSource {
+  path: string;    // caminho da pasta (ex.: "40.Archive/Relatórios Claude")
+  color: string;   // cor do indicador da fonte
+  on: boolean;     // marcada = aparece na semana
+}
+
 interface DashSettings {
   sectionOrder: SectionId[];
   compact: boolean;
-  hidden: string[];   // caminhos de pasta ocultos + "sec:calendar" / "sec:reports"
+  hidden: string[];   // caminhos de pasta ocultos + "sec:calendar" / "sec:heatmap"
   noteView: "list" | "grid";
+  calendarSources: CalSource[];   // fontes (pastas) que alimentam os cards da Semana
   todoistToken: string;
   todoistDayRange: 3 | 7;        // quantos "próximos dias" mostrar na grade
   todoistFilters: TodoistFilters;
@@ -27,10 +36,14 @@ interface DashSettings {
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
-  sectionOrder: ["stats", "todoist", "para", "sync", "heatmap", "growth", "reports", "calendar"],
+  sectionOrder: ["stats", "todoist", "para", "sync", "heatmap", "growth", "calendar"],
   compact: false,
   hidden: [],
   noteView: "list",
+  calendarSources: [
+    { path: "40.Archive/Relatórios Claude", color: "#3B82F6", on: true },
+    { path: "50.Diário",                    color: "#10B981", on: true },
+  ],
   todoistToken: "",
   todoistDayRange: 7,
   todoistFilters: { projects: [], labels: [] },
@@ -77,7 +90,6 @@ const STATUS_ICON: Record<Status, string> = {
 };
 
 const SEC_CAL = "sec:calendar";
-const SEC_REP = "sec:reports";
 const SEC_HEAT = "sec:heatmap";
 const SEC_GROW = "sec:growth";
 const SEC_STAT = "sec:stats";
@@ -386,6 +398,19 @@ function todayBR(): string {
   });
 }
 
+// Todos os caminhos de pasta do cofre (recursivo), ignorando ocultas (.obsidian etc.),
+// em ordem alfabética — usado no seletor de fontes da Semana.
+function allFolderPaths(app: App): string[] {
+  const out: string[] = [];
+  const walk = (f: TFolder) => {
+    for (const c of f.children) {
+      if (c instanceof TFolder && !c.name.startsWith(".")) { out.push(c.path); walk(c); }
+    }
+  };
+  walk(app.vault.getRoot());
+  return out.sort((a, b) => a.localeCompare(b));
+}
+
 // dd/mm a partir de um timestamp (mtime)
 function fmtShort(ts: number): string {
   const d = new Date(ts);
@@ -580,6 +605,7 @@ class DashboardView extends ItemView {
   private searchTerm = "";
   private reviewFilter = false;
   private growthCumulative = false;
+  private calSourcesOpen = false;   // seletor de fontes da Semana aberto
 
   // Estado da integração Todoist
   private todoistTasks: TodoistTask[] = [];
@@ -636,7 +662,6 @@ class DashboardView extends ItemView {
       if (id === "calendar")     this.renderCalendar(root);
       else if (id === "para")    this.renderPara(root);
       else if (id === "heatmap") this.renderHeatmap(root);
-      else if (id === "reports") this.renderReports(root);
       else if (id === "growth")  this.renderGrowth(root);
       else if (id === "stats")   this.renderStats(root);
       else if (id === "todoist") this.renderTodoist(root);
@@ -701,7 +726,6 @@ class DashboardView extends ItemView {
 
   private hiddenLabel(key: string): string {
     if (key === SEC_CAL) return "📅 Calendário";
-    if (key === SEC_REP) return "📄 Relatórios Claude";
     if (key === SEC_HEAT) return "🔥 Heatmap";
     if (key === SEC_GROW) return "📈 Crescimento";
     if (key === SEC_STAT) return "📊 Estatísticas";
@@ -807,10 +831,26 @@ class DashboardView extends ItemView {
     const weekNum = isoWeekNumber(monday);
     const todayK  = toKey(new Date());
 
-    const byDay: Record<string, { name: string; file: TFile }[]> = {};
+    // Fontes ativas (pastas marcadas). A cor de cada nota vem da fonte de
+    // prefixo mais específico que a contém.
+    const sources = this.plugin.settings.calendarSources.filter(s => s.on);
+    const colorFor = (path: string): string | null => {
+      let best: CalSource | null = null;
+      for (const s of sources) {
+        if (path === `${s.path}.md` || path.startsWith(`${s.path}/`)) {
+          if (!best || s.path.length > best.path.length) best = s;
+        }
+      }
+      return best ? best.color : null;
+    };
+
+    const byDay: Record<string, { name: string; file: TFile; color: string }[]> = {};
     for (const file of this.app.vault.getMarkdownFiles()) {
-      const d = normalizeDate(this.app.metadataCache.getCache(file.path)?.frontmatter?.date);
-      if (d) (byDay[d] ??= []).push({ name: file.basename, file });
+      const color = colorFor(file.path);
+      if (!color) continue;   // só notas dentro de uma fonte marcada
+      const m = file.basename.match(/^(\d{4}-\d{2}-\d{2})/);
+      const d = normalizeDate(this.app.metadataCache.getCache(file.path)?.frontmatter?.date) ?? (m ? m[1] : null);
+      if (d) (byDay[d] ??= []).push({ name: file.basename, file, color });
     }
 
     const sec = root.createDiv({ cls: "wd-section wd-cal-section" });
@@ -830,12 +870,18 @@ class DashboardView extends ItemView {
     }
 
     const ctrls = nav.createDiv({ cls: "wd-cal-ctrls" });
+    const srcBtn = ctrls.createSpan({ cls: "wd-cal-srcbtn" + (this.calSourcesOpen ? " wd-on" : "") });
+    setIcon(srcBtn.createSpan({ cls: "wd-cal-srcico" }), "folder-cog");
+    srcBtn.setAttr("title", "Fontes dos cards da semana");
+    srcBtn.onclick = e => { e.stopPropagation(); this.calSourcesOpen = !this.calSourcesOpen; this.render(); };
     const prev = ctrls.createSpan({ cls: "wd-cal-arrow", text: "‹" });
     const next = ctrls.createSpan({ cls: "wd-cal-arrow", text: "›" });
     prev.onclick = () => { this.weekOffset--; this.render(); };
     next.onclick = () => { this.weekOffset++; this.render(); };
     this.moveControls(ctrls, "calendar");
     this.hideBtn(ctrls, SEC_CAL, "Ocultar calendário", "wd-sec-hide");
+
+    if (this.calSourcesOpen) this.renderCalSources(sec);
 
     // ── Celular: lista vertical de 3 dias (ontem/hoje/amanhã) ───────────────
     // Cada dia = a nota diária (uma por dia). Linha inteira clicável: abre a
@@ -886,7 +932,9 @@ class DashboardView extends ItemView {
       const items = byDay[key] ?? [];
       for (const it of items.slice(0, 3)) {
         const pill = col.createDiv({ cls: "wd-cal-pill" });
-        pill.textContent = it.name.length > 14 ? it.name.slice(0, 14) + "…" : it.name;
+        pill.style.setProperty("--wd-src", it.color);
+        pill.createSpan({ cls: "wd-cal-pill-dot" });
+        pill.createSpan({ cls: "wd-cal-pill-txt", text: it.name.length > 14 ? it.name.slice(0, 14) + "…" : it.name });
         pill.onclick = () => this.app.workspace.getLeaf(false).openFile(it.file);
       }
       if (items.length > 3) col.createDiv({ cls: "wd-cal-more", text: `+${items.length - 3}` });
@@ -900,6 +948,50 @@ class DashboardView extends ItemView {
         ? `${MONTH_SHORT[monday.getMonth()]} ${monday.getFullYear()}`
         : `${MONTH_SHORT[monday.getMonth()]} – ${MONTH_SHORT[end.getMonth()]} ${end.getFullYear()}`,
     });
+  }
+
+  // Seletor de fontes da Semana: marca quais pastas alimentam os cards, com cor
+  // por fonte. "+ pasta" adiciona qualquer pasta do cofre; × remove.
+  private renderCalSources(sec: HTMLElement) {
+    const srcs = this.plugin.settings.calendarSources;
+    const bar = sec.createDiv({ cls: "wd-cal-srcbar" });
+
+    bar.createSpan({ cls: "wd-cal-srclabel", text: "Fontes dos cards" });
+
+    for (const s of srcs) {
+      const chip = bar.createSpan({ cls: "wd-cal-srcchip" + (s.on ? " wd-on" : "") });
+      const dot = chip.createSpan({ cls: "wd-cal-srcdot" });
+      dot.style.background = s.color;
+      chip.createSpan({ cls: "wd-cal-srcname", text: s.path });
+      chip.onclick = async () => { s.on = !s.on; await this.plugin.saveSettings(); this.render(); };
+      const rm = chip.createSpan({ cls: "wd-cal-srcrm", text: "×" });
+      rm.setAttr("title", "Remover fonte");
+      rm.onclick = async (e) => {
+        e.stopPropagation();
+        this.plugin.settings.calendarSources = srcs.filter(x => x !== s);
+        await this.plugin.saveSettings();
+        this.render();
+      };
+    }
+
+    // Pastas do cofre ainda não usadas como fonte → "+ adicionar".
+    const used = new Set(srcs.map(s => s.path));
+    const available = allFolderPaths(this.app).filter(p => !used.has(p));
+    if (available.length) {
+      const add = bar.createDiv({ cls: "wd-cal-srcadd" });
+      add.createSpan({ cls: "wd-cal-srcaddico", text: "+" });
+      const sel = add.createEl("select", { cls: "wd-cal-srcselect" });
+      sel.createEl("option", { text: "adicionar pasta…", value: "" });
+      for (const p of available) sel.createEl("option", { text: p, value: p });
+      sel.onchange = async () => {
+        const path = sel.value;
+        if (!path) return;
+        const color = ACCENTS[srcs.length % ACCENTS.length];
+        srcs.push({ path, color, on: true });
+        await this.plugin.saveSettings();
+        this.render();
+      };
+    }
   }
 
   // Acha a nota diária de `key` (YYYY-MM-DD): primeiro pelo caminho canônico em
@@ -1146,40 +1238,6 @@ permissions:
 
     if (!subs.length && !notes.length)
       panel.createDiv({ cls: "wd-empty", text: "Pasta vazia." });
-  }
-
-  // ── Relatórios ────────────────────────────────────────────────────────────
-
-  private renderReports(root: HTMLElement) {
-    if (this.isHidden(SEC_REP)) return;
-
-    const dir = this.app.vault.getAbstractFileByPath("40.Archive/Relatórios Claude");
-    if (!(dir instanceof TFolder)) return;
-    const items: { file: TFile; date: string }[] = [];
-    for (const c of dir.children) {
-      if (!(c instanceof TFile) || c.extension !== "md") continue;
-      const d = normalizeDate(this.app.metadataCache.getCache(c.path)?.frontmatter?.date);
-      if (d) items.push({ file: c, date: d });
-    }
-    items.sort((a, b) => b.date.localeCompare(a.date));
-    if (!items.length) return;
-
-    const sec = root.createDiv({ cls: "wd-section" });
-    const head = sec.createDiv({ cls: "wd-sec-head" });
-    head.createDiv({ cls: "wd-sec-label", text: "RELATÓRIOS CLAUDE" });
-    const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
-    this.moveControls(ctrls, "reports");
-    this.hideBtn(ctrls, SEC_REP, "Ocultar Relatórios Claude", "wd-sec-hide");
-
-    const list = sec.createDiv({ cls: "wd-report-list" });
-    for (const { file, date } of items.slice(0, 6)) {
-      const [y, m, d] = date.split("-");
-      const row = list.createDiv({ cls: "wd-report-row" });
-      row.createSpan({ cls: "wd-report-date", text: `${d}/${m}/${y}` });
-      row.createSpan({ cls: "wd-report-name", text: file.basename });
-      row.onclick = () => this.app.workspace.getLeaf(false).openFile(file);
-      void y;
-    }
   }
 
   // ── Heatmap (via plugin Heatmap Calendar) ─────────────────────────────────
@@ -2078,14 +2136,20 @@ export default class WerusDashboard extends Plugin {
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     // Saneamento: sectionOrder com exatamente as seções válidas, sem duplicatas.
-    const valid: SectionId[] = ["stats", "todoist", "para", "sync", "heatmap", "growth", "reports", "calendar"];
+    const valid: SectionId[] = ["stats", "todoist", "para", "sync", "heatmap", "growth", "calendar"];
     const seen = new Set<SectionId>();
     const cleaned = (this.settings.sectionOrder || []).filter(
       (s): s is SectionId => valid.includes(s as SectionId) && !seen.has(s as SectionId) && (seen.add(s as SectionId), true)
     );
     for (const v of valid) if (!seen.has(v)) cleaned.push(v);
-    this.settings.sectionOrder = cleaned;
+    this.settings.sectionOrder = cleaned;   // "reports" some aqui se estava numa config antiga
     if (!Array.isArray(this.settings.hidden)) this.settings.hidden = [];
+    // Fontes da Semana (v0.10.1): valida a lista; se ausente/inválida, usa o default.
+    const cs = this.settings.calendarSources;
+    this.settings.calendarSources = Array.isArray(cs) && cs.length
+      ? cs.filter(s => s && typeof s.path === "string")
+          .map(s => ({ path: s.path, color: typeof s.color === "string" ? s.color : ACCENTS[0], on: s.on !== false }))
+      : DEFAULT_SETTINGS.calendarSources.map(s => ({ ...s }));
     // Saneamento Todoist (v0.7.0).
     this.settings.todoistDayRange = this.settings.todoistDayRange === 3 ? 3 : 7;
     const tf = this.settings.todoistFilters;

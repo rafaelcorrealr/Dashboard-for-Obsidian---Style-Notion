@@ -346,19 +346,99 @@ body {
 }
 
 .wd-cal-pill {
+  --wd-src: var(--wd-border);
+  display: flex;
+  align-items: center;
+  gap: 5px;
   font-size: 9px;
-  padding: 2px 5px;
+  padding: 2px 6px;
   background: var(--wd-border);
+  border-left: 2px solid var(--wd-src);
   border-radius: 4px;
   color: var(--wd-text-muted);
   cursor: pointer;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: background 0.15s, color 0.15s;
   line-height: 1.5;
+  transition: background 0.15s, color 0.15s;
 }
 .wd-cal-pill:hover { background: var(--wd-accent); color: #fff; }
+.wd-cal-pill-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--wd-src);
+  flex-shrink: 0;
+}
+.wd-cal-pill-txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+/* ── Seletor de fontes da Semana ──────────────────────────────────────────── */
+.wd-cal-srcbtn {
+  display: inline-flex;
+  align-items: center;
+  color: var(--wd-text-faint);
+  cursor: pointer;
+  padding: 4px 7px;
+  border-radius: 6px;
+  transition: background 0.15s, color 0.15s;
+}
+.wd-cal-srcbtn:hover { background: var(--wd-border); color: var(--wd-text); }
+.wd-cal-srcbtn.wd-on { color: var(--wd-accent); background: var(--wd-fill); }
+.wd-cal-srcbtn .wd-cal-srcico svg { width: 15px; height: 15px; }
+
+.wd-cal-srcbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-bottom: 12px;
+  padding: 9px 11px;
+  background: var(--wd-surface);
+  border: 1px solid var(--wd-border);
+  border-radius: 8px;
+}
+.wd-cal-srclabel {
+  font-family: var(--font-monospace, monospace);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--wd-text-faint);
+  margin-right: 2px;
+}
+.wd-cal-srcchip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  padding: 3px 8px;
+  border: 1px solid var(--wd-border);
+  border-radius: 999px;
+  color: var(--wd-text-muted);
+  cursor: pointer;
+  opacity: 0.5;
+  transition: opacity 0.15s, border-color 0.15s;
+}
+.wd-cal-srcchip.wd-on { opacity: 1; border-color: var(--wd-text-faint); color: var(--wd-text); }
+.wd-cal-srcdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
+.wd-cal-srcname { white-space: nowrap; }
+.wd-cal-srcrm {
+  font-size: 13px;
+  line-height: 1;
+  color: var(--wd-text-faint);
+  padding-left: 2px;
+}
+.wd-cal-srcrm:hover { color: #EF4444; }
+
+.wd-cal-srcadd { display: inline-flex; align-items: center; gap: 4px; }
+.wd-cal-srcaddico { color: var(--wd-text-faint); font-size: 13px; }
+.wd-cal-srcselect {
+  font-size: 11px;
+  padding: 3px 6px;
+  background: var(--wd-bg-alt);
+  color: var(--wd-text-muted);
+  border: 1px solid var(--wd-border);
+  border-radius: 6px;
+  cursor: pointer;
+  max-width: 200px;
+}
 
 .wd-cal-more {
   font-family: var(--font-monospace, monospace);
@@ -682,37 +762,6 @@ body {
 .wd-strike {
   text-decoration: line-through;
   color: var(--wd-text-faint);
-}
-
-/* ── Relatórios ───────────────────────────────────────────────────────────── */
-.wd-report-list { display: flex; flex-direction: column; gap: 5px; }
-
-.wd-report-row {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 9px 12px;
-  background: var(--wd-surface);
-  border: 1px solid var(--wd-border);
-  border-radius: 7px;
-  cursor: pointer;
-  transition: border-color 0.2s;
-}
-.wd-report-row:hover { border-color: var(--wd-accent); }
-
-.wd-report-date {
-  font-family: var(--font-monospace, monospace);
-  font-size: 11px;
-  color: var(--wd-accent);
-  min-width: 75px;
-}
-
-.wd-report-name {
-  font-size: 12px;
-  color: var(--wd-text-muted);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 /* ── Heatmap (plugin Heatmap Calendar) ────────────────────────────────────── */

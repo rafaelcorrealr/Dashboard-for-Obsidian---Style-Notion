@@ -6,6 +6,15 @@
 
 ---
 
+## [0.10.1] — alpha — 2026-06-05
+
+**Semana com fontes configuráveis + remoção da seção "Relatórios Claude".** A seção separada de relatórios saiu; a ideia foi unificada dentro da **Semana** (calendário).
+
+- **Seletor de fontes na Semana:** botão **⚙ (folder-cog)** no cabeçalho abre uma barra onde se marca **quais pastas** alimentam os cards dos dias — várias ao mesmo tempo, **cada fonte com sua cor**. Padrão: `40.Archive/Relatórios Claude` (azul) + `50.Diário` (verde).
+- **"+ adicionar pasta":** qualquer pasta do cofre pode virar fonte (dropdown com todas as pastas); cor atribuída automaticamente da paleta. Cada chip tem ✕ para remover. Persistido em `calendarSources` (`data.json`).
+- Os **cards do dia** agora mostram só notas das fontes marcadas, com **bolinha + borda colorida** por fonte (posição pelo `date:` do frontmatter, ou pela data no nome do arquivo `YYYY-MM-DD`). Clicar abre a nota; o cabeçalho do dia continua abrindo/criando a nota diária em `50.Diário/`.
+- **Migração automática:** `reports` é removido do `sectionOrder` salvo; quem tinha a seção não perde nada (vira fonte da Semana).
+
 ## [0.10.0] — alpha — 2026-06-04
 
 **Saúde do cofre: Sincronização (Syncthing) + Conflitos.** Nova seção **SINCRONIZAÇÃO** (id `sync`, reordenável/ocultável).
