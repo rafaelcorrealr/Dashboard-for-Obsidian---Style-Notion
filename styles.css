@@ -1576,6 +1576,45 @@ body {
 .wd-tf-warn { font-size: 11px; color: #d8a; margin-top: 5px; }
 .wd-tf-labeladd { margin-top: 6px; }
 
+/* Data via calendário (input type=date) + botão "sem data" */
+.wd-tf-due-row { display: flex; align-items: center; gap: 8px; }
+.wd-tf-date { flex: 1; cursor: pointer; color-scheme: light dark; }
+.wd-tf-date::-webkit-calendar-picker-indicator { cursor: pointer; opacity: 0.7; }
+.wd-tf-date::-webkit-calendar-picker-indicator:hover { opacity: 1; }
+.wd-tf-due-clear {
+  flex-shrink: 0;
+  font-size: 11px;
+  padding: 5px 10px;
+  color: var(--wd-text-muted);
+  background: transparent;
+  border: 1px solid var(--wd-border);
+  border-radius: 6px;
+  cursor: pointer;
+}
+.wd-tf-due-clear:hover { color: var(--wd-text); border-color: var(--wd-text-faint); }
+
+/* "Abrir no Todoist" no topo do modal, ao lado do X — pequeno e com destaque */
+.wd-task-form .wd-tf-open-top {
+  position: absolute;
+  top: 14px;
+  right: 46px;
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0 9px;
+  border-radius: 5px;
+  border: 1px solid var(--interactive-accent);
+  background: var(--interactive-accent);
+  color: var(--text-on-accent);
+  cursor: pointer;
+  box-shadow: 0 0 0 1px var(--interactive-accent), 0 1px 4px rgba(0, 0, 0, 0.2);
+  transition: filter 0.15s;
+}
+.wd-task-form .wd-tf-open-top:hover { filter: brightness(1.12); }
+
 .wd-tf-pri-row { display: flex; gap: 6px; }
 .wd-tf-pri {
   font-family: var(--font-monospace, monospace);

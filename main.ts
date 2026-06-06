@@ -275,6 +275,7 @@ interface TodoistWrite {
   content?: string;
   description?: string;
   priority?: number;     // 1..4 (4 = urgente / p1 na UI)
+  due_date?: string;     // data fixa YYYY-MM-DD (vindo do calendário)
   due_string?: string;   // linguagem natural; "no date" limpa a data
   due_lang?: string;     // "pt" → interpreta em português
   labels?: string[];
@@ -1810,7 +1811,7 @@ permissions:
       if (mode === "create") {
         const fields: TodoistWrite = { content: v.content, priority: v.priority };
         if (v.description.trim()) fields.description = v.description.trim();
-        if (v.dueString.trim()) { fields.due_string = v.dueString.trim(); fields.due_lang = "pt"; }
+        if (v.dueDate) fields.due_date = v.dueDate;
         if (v.projectId) fields.project_id = v.projectId;
         if (v.labels.length) fields.labels = v.labels;
         await createTodoistTask(token, fields);
@@ -1820,10 +1821,10 @@ permissions:
         if (v.content !== task.content) fields.content = v.content;
         if (v.description !== (task.description ?? "")) fields.description = v.description;
         if (v.priority !== task.priority) fields.priority = v.priority;
-        const oldDue = task.due?.string ?? task.due?.date ?? "";
-        if (v.dueString.trim() !== oldDue) {
-          fields.due_string = v.dueString.trim() || "no date";
-          if (v.dueString.trim()) fields.due_lang = "pt";
+        const oldDate = task.due?.date ? task.due.date.substring(0, 10) : "";
+        if (v.dueDate !== oldDate) {
+          if (v.dueDate) fields.due_date = v.dueDate;
+          else fields.due_string = "no date";   // limpa a data
         }
         const oldL = (task.labels ?? []).slice().sort().join(" ");
         const newL = v.labels.slice().sort().join(" ");
@@ -2241,7 +2242,7 @@ interface TaskFormValues {
   content: string;
   description: string;
   priority: number;   // API 1..4 (4 = p1)
-  dueString: string;
+  dueDate: string;    // YYYY-MM-DD (calendário); "" = sem data
   projectId: string;
   labels: string[];
 }
@@ -2267,11 +2268,15 @@ class TaskFormModal extends Modal {
   constructor(app: App, private opts: TaskFormOpts) {
     super(app);
     const t = opts.task;
+    // Prefill de criação: "hoje" → data de hoje; já-YYYY-MM-DD passa direto; resto ignora.
+    const pre = opts.prefillDue;
+    const prefillDate = pre === "hoje" ? toKey(new Date())
+      : (pre && /^\d{4}-\d{2}-\d{2}$/.test(pre) ? pre : "");
     this.v = {
       content: t?.content ?? "",
       description: t?.description ?? "",
       priority: t?.priority ?? 1,
-      dueString: t?.due?.string ?? opts.prefillDue ?? "",
+      dueDate: t?.due?.date ? t.due.date.substring(0, 10) : prefillDate,
       projectId: t?.project_id ?? "",
       labels: (t?.labels ?? []).slice(),
     };
@@ -2282,6 +2287,13 @@ class TaskFormModal extends Modal {
     const { contentEl, titleEl, modalEl } = this;
     modalEl.addClass("wd-task-form");
     titleEl.setText(this.opts.mode === "create" ? "Nova tarefa" : "Editar tarefa");
+
+    // Só na edição: atalho "Abrir no Todoist" no topo, ao lado do X de fechar.
+    if (this.opts.mode === "edit" && this.opts.task) {
+      const open = modalEl.createEl("button", { cls: "wd-tf-open-top", text: "↗ Todoist" });
+      open.setAttr("title", "Abrir no Todoist");
+      open.onclick = () => window.open(taskUrl(this.opts.task!), "_blank");
+    }
 
     this.field("Título");
     const content = contentEl.createEl("input", { cls: "wd-tf-input", type: "text" });
@@ -2311,13 +2323,15 @@ class TaskFormModal extends Modal {
     renderPri();
 
     this.field("Data");
-    const due = contentEl.createEl("input", { cls: "wd-tf-input", type: "text" });
-    due.value = this.v.dueString;
-    due.placeholder = "ex.: amanhã, sexta, todo dia 1, 2026-06-10";
-    due.oninput = () => { this.v.dueString = due.value; };
-    contentEl.createDiv({ cls: "wd-tf-hint", text: "Texto em português. Vazio = sem data." });
+    const drow = contentEl.createDiv({ cls: "wd-tf-due-row" });
+    const due = drow.createEl("input", { cls: "wd-tf-input wd-tf-date", type: "date" });
+    due.value = this.v.dueDate;
+    due.onchange = () => { this.v.dueDate = due.value; };
+    const clr = drow.createEl("button", { cls: "wd-tf-due-clear", text: "sem data" });
+    clr.onclick = () => { this.v.dueDate = ""; due.value = ""; };
+    contentEl.createDiv({ cls: "wd-tf-hint", text: "Clique para abrir o calendário. Vazio = sem data." });
     if (this.opts.task?.due?.is_recurring)
-      contentEl.createDiv({ cls: "wd-tf-warn", text: "⟳ Tarefa recorrente — mudar a data pode alterar a recorrência." });
+      contentEl.createDiv({ cls: "wd-tf-warn", text: "⟳ Tarefa recorrente — mudar a data fixa pode encerrar a recorrência." });
 
     this.field("Projeto");
     const sel = contentEl.createEl("select", { cls: "wd-tf-select" });
@@ -2380,12 +2394,6 @@ class TaskFormModal extends Modal {
     if (this.opts.mode === "edit") {
       const del = a.createEl("button", { text: "Excluir", cls: "mod-warning" });
       del.onclick = () => { this.confirmDel = true; this.renderActions(); };
-      const open = a.createEl("button", { text: "Abrir no Todoist" });
-      open.onclick = () => { if (this.opts.task) window.open(taskUrl(this.opts.task), "_blank"); };
-      if (this.opts.complete) {
-        const done = a.createEl("button", { text: "✓ Concluir" });
-        done.onclick = () => { this.opts.complete!(); this.close(); };
-      }
     }
 
     a.createDiv({ cls: "wd-tf-spacer" });

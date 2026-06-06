@@ -6,6 +6,14 @@
 
 ---
 
+## [0.10.2] — alpha — 2026-06-06
+
+**Todoist: formulário de tarefa com calendário + ajustes na edição.**
+
+- **Data por calendário:** o campo de data do formulário (criar/editar) virou um seletor de **calendário** (`input type=date`) — clicar abre o date picker em vez de digitar texto. Botão **"sem data"** ao lado limpa a data. Envia `due_date` (YYYY-MM-DD) à API. *Obs.: tarefas recorrentes — mudar a data fixa pode encerrar a recorrência (aviso mantido no form).*
+- **Edição sem "Concluir":** removido o botão **✓ Concluir** do formulário de edição (concluir continua disponível pelo checkbox na lista e pelo pop-up de detalhes).
+- **"Abrir no Todoist" reposicionado:** saiu da barra de baixo e foi para o **topo do modal, ao lado do ✕ de fechar** — menor (`↗ Todoist`) e com **destaque** (cor de acento + sombra).
+
 ## [0.10.1] — alpha — 2026-06-05
 
 **Semana com fontes configuráveis + remoção da seção "Relatórios Claude".** A seção separada de relatórios saiu; a ideia foi unificada dentro da **Semana** (calendário).
