@@ -6,6 +6,19 @@
 
 ---
 
+## [0.11.0] — alpha — 2026-06-08
+
+**Controles de exibição migram para as Configurações.** A dashboard fica limpa para o uso do dia a dia; quem administra a aparência faz isso na aba **Configurações → Werus Dashboard**. (Nada muda na identidade visual Notion-like.)
+
+- **Saiu da view** (durante o uso): os botões de **ocultar** (👁 eye-off) das seções e dos cards de pasta, a barra **"ocultos:"**, as setas **▲▼** de reordenar seção, o botão **⚙ (folder-cog)** de fontes da Semana e o toggle **compacto/confortável** do cabeçalho.
+- **Entrou nas Configurações** três grupos novos:
+  - **Exibição do dashboard:** toggle **Modo compacto**.
+  - **Seções do dashboard:** por seção, **mostrar/ocultar** + **reordenar** (▲▼). A ordem da lista reflete a ordem na dashboard.
+  - **Pastas exibidas (cards do Cofre):** toggle de visibilidade por pasta de topo.
+  - **Fontes da Semana:** por fonte, **ativar/desativar**, **cor** (color picker nativo) e **remover**; dropdown para **adicionar** qualquer pasta do cofre.
+- **Atualização ao vivo:** mudar qualquer opção re-renderiza as dashboards abertas na hora (`rerenderDashboards`).
+- **Internamente:** removidos da view os métodos de cromo (`moveControls`, `hideBtn`, `renderHiddenBar`, `renderCalSources`, `hiddenLabel` e auxiliares); a view só **lê** `settings.hidden` para pular o que está oculto. CSS órfão removido.
+
 ## [0.10.2] — alpha — 2026-06-06
 
 **Todoist: formulário de tarefa com calendário + ajustes na edição.**

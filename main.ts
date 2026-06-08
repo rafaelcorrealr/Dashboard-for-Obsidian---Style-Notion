@@ -90,11 +90,23 @@ const STATUS_ICON: Record<Status, string> = {
 };
 
 const SEC_CAL = "sec:calendar";
+const SEC_PARA = "sec:para";
 const SEC_HEAT = "sec:heatmap";
 const SEC_GROW = "sec:growth";
 const SEC_STAT = "sec:stats";
 const SEC_TODO = "sec:todoist";
 const SEC_SYNC = "sec:sync";
+
+// Rótulos amigáveis das seções (usados na aba de Configurações).
+const SECTION_LABEL: Record<SectionId, string> = {
+  stats:    "Estatísticas",
+  todoist:  "Tarefas",
+  para:     "Cofre (pastas)",
+  sync:     "Sincronização",
+  heatmap:  "Atividade do cofre",
+  growth:   "Crescimento do cofre",
+  calendar: "Semana",
+};
 
 // ── Todoist ─────────────────────────────────────────────────────────────────
 
@@ -606,7 +618,6 @@ class DashboardView extends ItemView {
   private searchTerm = "";
   private reviewFilter = false;
   private growthCumulative = false;
-  private calSourcesOpen = false;   // seletor de fontes da Semana aberto
 
   // Estado da integração Todoist
   private todoistTasks: TodoistTask[] = [];
@@ -640,6 +651,10 @@ class DashboardView extends ItemView {
 
   async onClose() { this.hideTip(); }
 
+  // Re-render público — chamado pelo plugin quando a configuração muda na aba
+  // de Configurações (ordem das seções, ocultar/mostrar, fontes da Semana).
+  refresh() { void this.render(); }
+
   private schedule() {
     if (this.timer) clearTimeout(this.timer);
     this.timer = setTimeout(() => this.render(), 400);
@@ -670,93 +685,13 @@ class DashboardView extends ItemView {
     }
   }
 
-  // ── Controles de ordem de seção ───────────────────────────────────────────
-
-  private moveControls(host: HTMLElement, id: SectionId) {
-    const order = this.plugin.settings.sectionOrder;
-    const i = order.indexOf(id);
-    const ctrl = host.createDiv({ cls: "wd-move-ctrl" });
-
-    const up = ctrl.createSpan({ cls: "wd-move-btn" + (i <= 0 ? " wd-move-off" : ""), text: "▲" });
-    up.setAttr("title", "Mover seção para cima");
-    if (i > 0) up.onclick = e => { e.stopPropagation(); this.moveSection(id, -1); };
-
-    const down = ctrl.createSpan({ cls: "wd-move-btn" + (i >= order.length - 1 ? " wd-move-off" : ""), text: "▼" });
-    down.setAttr("title", "Mover seção para baixo");
-    if (i < order.length - 1) down.onclick = e => { e.stopPropagation(); this.moveSection(id, +1); };
-  }
-
-  private async moveSection(id: SectionId, dir: number) {
-    const order = [...this.plugin.settings.sectionOrder];
-    const i = order.indexOf(id);
-    const j = i + dir;
-    if (i < 0 || j < 0 || j >= order.length) return;
-    [order[i], order[j]] = [order[j], order[i]];
-    this.plugin.settings.sectionOrder = order;
-    await this.plugin.saveSettings();
-    this.render();
-  }
-
-  // ── Ocultar / restaurar ───────────────────────────────────────────────────
+  // ── Ocultar (leitura) ─────────────────────────────────────────────────────
+  // Mostrar/ocultar e a ordem das seções são administrados na aba de
+  // Configurações do plugin. A view só *lê* `settings.hidden` para pular o que
+  // está oculto. Ver WerusSettingTab.
 
   private isHidden(key: string): boolean {
     return this.plugin.settings.hidden.includes(key);
-  }
-
-  private hideBtn(host: HTMLElement, key: string, title: string, cls = "wd-hide-btn") {
-    const b = host.createSpan({ cls });
-    setIcon(b, "eye-off");
-    b.setAttr("title", title);
-    b.onclick = e => { e.stopPropagation(); this.hideItem(key); };
-  }
-
-  private async hideItem(key: string) {
-    if (this.isHidden(key)) return;
-    this.plugin.settings.hidden.push(key);
-    // Se estávamos dentro da pasta que acabou de ser oculta, fecha o navegador.
-    if (this.navPath && (this.navPath === key || this.navPath.startsWith(key + "/"))) this.navPath = null;
-    await this.plugin.saveSettings();
-    this.render();
-  }
-
-  private async unhideItem(key: string) {
-    this.plugin.settings.hidden = this.plugin.settings.hidden.filter(k => k !== key);
-    await this.plugin.saveSettings();
-    this.render();
-  }
-
-  private hiddenLabel(key: string): string {
-    if (key === SEC_CAL) return "📅 Calendário";
-    if (key === SEC_HEAT) return "🔥 Heatmap";
-    if (key === SEC_GROW) return "📈 Crescimento";
-    if (key === SEC_STAT) return "📊 Estatísticas";
-    if (key === SEC_TODO) return "📋 Tarefas";
-    const f = this.app.vault.getAbstractFileByPath(key);
-    return f instanceof TFolder ? f.name : key;
-  }
-
-  private renderHiddenBar(parent: HTMLElement) {
-    const hidden = this.plugin.settings.hidden;
-    if (!hidden.length) return;
-    const bar = parent.createDiv({ cls: "wd-hidden-bar" });
-    bar.createSpan({ cls: "wd-hidden-label", text: "ocultos:" });
-    for (const key of hidden) {
-      const chip = bar.createSpan({ cls: "wd-hidden-chip" });
-      // Pasta oculta com notas urgentes → contorno pela cor do nível máximo.
-      const f = this.app.vault.getAbstractFileByPath(key);
-      const urg = f instanceof TFolder ? urgencyStats(this.app, f) : { items: [], max: null };
-      if (urg.max) {
-        chip.addClass("wd-hidden-urgent");
-        chip.addClass(`wd-u-${urg.max}`);
-        chip.style.borderColor = URGENCY_COLOR[urg.max];
-      }
-      setIcon(chip.createSpan({ cls: "wd-chip-icon" }), "eye");
-      chip.createSpan({ text: this.hiddenLabel(key) });
-      chip.setAttr("title", urg.max
-        ? `Mostrar novamente — ${urg.items.length} nota(s) urgente(s)`
-        : "Mostrar novamente");
-      chip.onclick = () => this.unhideItem(key);
-    }
   }
 
   // ── Tooltip de notas recentes ─────────────────────────────────────────────
@@ -871,18 +806,10 @@ class DashboardView extends ItemView {
     }
 
     const ctrls = nav.createDiv({ cls: "wd-cal-ctrls" });
-    const srcBtn = ctrls.createSpan({ cls: "wd-cal-srcbtn" + (this.calSourcesOpen ? " wd-on" : "") });
-    setIcon(srcBtn.createSpan({ cls: "wd-cal-srcico" }), "folder-cog");
-    srcBtn.setAttr("title", "Fontes dos cards da semana");
-    srcBtn.onclick = e => { e.stopPropagation(); this.calSourcesOpen = !this.calSourcesOpen; this.render(); };
     const prev = ctrls.createSpan({ cls: "wd-cal-arrow", text: "‹" });
     const next = ctrls.createSpan({ cls: "wd-cal-arrow", text: "›" });
     prev.onclick = () => { this.weekOffset--; this.render(); };
     next.onclick = () => { this.weekOffset++; this.render(); };
-    this.moveControls(ctrls, "calendar");
-    this.hideBtn(ctrls, SEC_CAL, "Ocultar calendário", "wd-sec-hide");
-
-    if (this.calSourcesOpen) this.renderCalSources(sec);
 
     // ── Celular: lista vertical de 3 dias (ontem/hoje/amanhã) ───────────────
     // Cada dia = a nota diária (uma por dia). Linha inteira clicável: abre a
@@ -951,50 +878,6 @@ class DashboardView extends ItemView {
     });
   }
 
-  // Seletor de fontes da Semana: marca quais pastas alimentam os cards, com cor
-  // por fonte. "+ pasta" adiciona qualquer pasta do cofre; × remove.
-  private renderCalSources(sec: HTMLElement) {
-    const srcs = this.plugin.settings.calendarSources;
-    const bar = sec.createDiv({ cls: "wd-cal-srcbar" });
-
-    bar.createSpan({ cls: "wd-cal-srclabel", text: "Fontes dos cards" });
-
-    for (const s of srcs) {
-      const chip = bar.createSpan({ cls: "wd-cal-srcchip" + (s.on ? " wd-on" : "") });
-      const dot = chip.createSpan({ cls: "wd-cal-srcdot" });
-      dot.style.background = s.color;
-      chip.createSpan({ cls: "wd-cal-srcname", text: s.path });
-      chip.onclick = async () => { s.on = !s.on; await this.plugin.saveSettings(); this.render(); };
-      const rm = chip.createSpan({ cls: "wd-cal-srcrm", text: "×" });
-      rm.setAttr("title", "Remover fonte");
-      rm.onclick = async (e) => {
-        e.stopPropagation();
-        this.plugin.settings.calendarSources = srcs.filter(x => x !== s);
-        await this.plugin.saveSettings();
-        this.render();
-      };
-    }
-
-    // Pastas do cofre ainda não usadas como fonte → "+ adicionar".
-    const used = new Set(srcs.map(s => s.path));
-    const available = allFolderPaths(this.app).filter(p => !used.has(p));
-    if (available.length) {
-      const add = bar.createDiv({ cls: "wd-cal-srcadd" });
-      add.createSpan({ cls: "wd-cal-srcaddico", text: "+" });
-      const sel = add.createEl("select", { cls: "wd-cal-srcselect" });
-      sel.createEl("option", { text: "adicionar pasta…", value: "" });
-      for (const p of available) sel.createEl("option", { text: p, value: p });
-      sel.onchange = async () => {
-        const path = sel.value;
-        if (!path) return;
-        const color = ACCENTS[srcs.length % ACCENTS.length];
-        srcs.push({ path, color, on: true });
-        await this.plugin.saveSettings();
-        this.render();
-      };
-    }
-  }
-
   // Acha a nota diária de `key` (YYYY-MM-DD): primeiro pelo caminho canônico em
   // 50.Diário/, senão qualquer nota cujo `date:` seja esse dia. Null se não houver.
   // (Relatório/nota diária é um por dia → abre o existente em vez de criar outro.)
@@ -1053,10 +936,13 @@ permissions:
   // ── Cards do cofre (todas as pastas de topo) + navegador aninhado ──────────
 
   private renderPara(root: HTMLElement) {
+    if (this.isHidden(SEC_PARA)) return;
+    // Se a pasta aberta no navegador foi ocultada nas Configurações, fecha.
+    if (this.navPath && this.isHidden(this.topFolderOf(this.navPath))) this.navPath = null;
+
     const sec = root.createDiv({ cls: "wd-section" });
     const head = sec.createDiv({ cls: "wd-sec-head" });
     head.createDiv({ cls: "wd-sec-label", text: "COFRE" });
-    this.moveControls(head, "para");
 
     const grid = sec.createDiv({ cls: "wd-para-grid" });
     const vaultRoot = this.app.vault.getRoot();
@@ -1088,7 +974,6 @@ permissions:
       }
       card.createDiv({ cls: "wd-accent-bar" }).style.background = meta.accent;
 
-      this.hideBtn(card, folder.path, `Ocultar "${meta.label}"`);
       this.urgencyBadge(card, urgencyStats(this.app, folder));
 
       const body = card.createDiv({ cls: "wd-card-body" });
@@ -1125,8 +1010,6 @@ permissions:
       const folder = this.app.vault.getAbstractFileByPath(this.navPath);
       if (folder instanceof TFolder) this.renderBrowser(sec, folder);
     }
-
-    this.renderHiddenBar(sec);
   }
 
   // Painel inline navegável (breadcrumb + subpastas + notas da pasta atual)
@@ -1250,9 +1133,6 @@ permissions:
     const sec = root.createDiv({ cls: "wd-section wd-heat-section" });
     const head = sec.createDiv({ cls: "wd-sec-head" });
     head.createDiv({ cls: "wd-sec-label", text: "ATIVIDADE DO COFRE" });
-    const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
-    this.moveControls(ctrls, "heatmap");
-    this.hideBtn(ctrls, SEC_HEAT, "Ocultar heatmap", "wd-sec-hide");
 
     const render = getHeatmapRenderer();
     if (!render) {
@@ -1305,9 +1185,6 @@ permissions:
     const sec = root.createDiv({ cls: "wd-section" });
     const head = sec.createDiv({ cls: "wd-sec-head" });
     head.createDiv({ cls: "wd-sec-label", text: "ESTATÍSTICAS" });
-    const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
-    this.moveControls(ctrls, "stats");
-    this.hideBtn(ctrls, SEC_STAT, "Ocultar estatísticas", "wd-sec-hide");
 
     // Números globais
     const glob = sec.createDiv({ cls: "wd-stat-global" });
@@ -1439,8 +1316,6 @@ permissions:
     const btnCum = ctrls.createSpan({ cls: "wd-view-btn" + (this.growthCumulative ? " wd-view-active" : ""), text: "total" });
     btnCum.setAttr("title", "Total acumulado no período");
     btnCum.onclick = e => { e.stopPropagation(); this.growthCumulative = true; this.render(); };
-    this.moveControls(ctrls, "growth");
-    this.hideBtn(ctrls, SEC_GROW, "Ocultar crescimento", "wd-sec-hide");
 
     // Agrupa notas por data de criação
     const counts: Record<string, number> = {};
@@ -1536,8 +1411,6 @@ permissions:
 
       this.addTaskBtn(ctrls, undefined, "Nova tarefa");
     }
-    this.moveControls(ctrls, "todoist");
-    this.hideBtn(ctrls, SEC_TODO, "Ocultar tarefas", "wd-sec-hide");
 
     if (!token) {
       sec.createDiv({ cls: "wd-empty", text: "Cole seu token do Todoist em Configurações → Werus Dashboard para ver suas tarefas aqui." });
@@ -1997,8 +1870,6 @@ permissions:
       refresh.setAttr("title", "Atualizar estado do Syncthing");
       refresh.onclick = e => { e.stopPropagation(); void this.fetchSync(true); };
     }
-    this.moveControls(ctrls, "sync");
-    this.hideBtn(ctrls, SEC_SYNC, "Ocultar sincronização", "wd-sec-hide");
 
     if (!key) {
       sec.createDiv({ cls: "wd-empty", text: "Configure a URL e a API key do Syncthing em Configurações → Werus Dashboard." });
@@ -2091,17 +1962,6 @@ permissions:
     const txt = h.createDiv({ cls: "wd-header-text" });
     txt.createDiv({ cls: "wd-date", text: todayBR() });
     txt.createDiv({ cls: "wd-title", text: "Second Brain" });
-
-    const toggle = h.createSpan({
-      cls: "wd-compact-toggle",
-      text: this.plugin.settings.compact ? "▦ compacto" : "▤ confortável",
-    });
-    toggle.setAttr("title", "Alternar modo compacto");
-    toggle.onclick = async () => {
-      this.plugin.settings.compact = !this.plugin.settings.compact;
-      await this.plugin.saveSettings();
-      this.render();
-    };
   }
 }
 
@@ -2132,6 +1992,37 @@ export default class WerusDashboard extends Plugin {
       const v = leaf.view;
       if (v instanceof DashboardView) v.resetSync();
     }
+  }
+
+  // Re-renderiza todas as dashboards abertas (após mudar config na aba de
+  // Configurações: ordem das seções, ocultar/mostrar, fontes da Semana).
+  rerenderDashboards() {
+    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
+      const v = leaf.view;
+      if (v instanceof DashboardView) v.refresh();
+    }
+  }
+
+  // Mostra/oculta uma seção ("sec:<id>") ou pasta (caminho) por chave em `hidden`.
+  async setHidden(key: string, hidden: boolean) {
+    const has = this.settings.hidden.includes(key);
+    if (hidden && !has) this.settings.hidden.push(key);
+    else if (!hidden && has) this.settings.hidden = this.settings.hidden.filter(k => k !== key);
+    else return;
+    await this.saveSettings();
+    this.rerenderDashboards();
+  }
+
+  // Reordena uma seção em sectionOrder (dir = -1 sobe, +1 desce).
+  async moveSection(id: SectionId, dir: number) {
+    const order = [...this.settings.sectionOrder];
+    const i = order.indexOf(id);
+    const j = i + dir;
+    if (i < 0 || j < 0 || j >= order.length) return;
+    [order[i], order[j]] = [order[j], order[i]];
+    this.settings.sectionOrder = order;
+    await this.saveSettings();
+    this.rerenderDashboards();
   }
 
   async loadSettings() {
@@ -2419,7 +2310,111 @@ class WerusSettingTab extends PluginSettingTab {
 
   display() {
     const { containerEl } = this;
+    const plugin = this.plugin;
     containerEl.empty();
+
+    // ── Exibição do dashboard ───────────────────────────────────────────────
+    containerEl.createEl("h3", { text: "Exibição do dashboard" });
+
+    new Setting(containerEl)
+      .setName("Modo compacto")
+      .setDesc("Layout mais denso, com menos espaçamento entre os elementos.")
+      .addToggle(t => t
+        .setValue(plugin.settings.compact)
+        .onChange(async v => {
+          plugin.settings.compact = v;
+          await plugin.saveSettings();
+          plugin.rerenderDashboards();
+        }));
+
+    // ── Seções do dashboard (visibilidade + ordem) ──────────────────────────
+    containerEl.createEl("h3", { text: "Seções do dashboard" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Ative/desative cada seção e ajuste a ordem em que aparecem na dashboard.",
+    });
+
+    const order = plugin.settings.sectionOrder;
+    order.forEach((id, i) => {
+      new Setting(containerEl)
+        .setName(SECTION_LABEL[id])
+        .addExtraButton(b => b
+          .setIcon("arrow-up").setTooltip("Mover para cima").setDisabled(i === 0)
+          .onClick(async () => { await plugin.moveSection(id, -1); this.display(); }))
+        .addExtraButton(b => b
+          .setIcon("arrow-down").setTooltip("Mover para baixo").setDisabled(i === order.length - 1)
+          .onClick(async () => { await plugin.moveSection(id, +1); this.display(); }))
+        .addToggle(t => t
+          .setTooltip("Visível")
+          .setValue(!plugin.settings.hidden.includes("sec:" + id))
+          .onChange(async v => { await plugin.setHidden("sec:" + id, !v); }));
+    });
+
+    // ── Pastas exibidas (cards do Cofre) ────────────────────────────────────
+    containerEl.createEl("h3", { text: "Pastas exibidas (cards do Cofre)" });
+    const topFolders = (this.app.vault.getRoot().children
+      .filter(c => c instanceof TFolder && !c.name.startsWith(".")) as TFolder[])
+      .sort((a, b) => a.name.localeCompare(b.name, "pt"));
+    if (!topFolders.length) {
+      containerEl.createEl("p", { cls: "setting-item-description", text: "Nenhuma pasta de topo no cofre." });
+    }
+    for (const f of topFolders) {
+      new Setting(containerEl)
+        .setName(f.name)
+        .addToggle(t => t
+          .setTooltip("Visível")
+          .setValue(!plugin.settings.hidden.includes(f.path))
+          .onChange(async v => { await plugin.setHidden(f.path, !v); }));
+    }
+
+    // ── Fontes da Semana ─────────────────────────────────────────────────────
+    containerEl.createEl("h3", { text: "Fontes da Semana" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Pastas cujas notas viram cards nos dias da Semana (posição pela data da nota). Cada fonte tem uma cor própria.",
+    });
+
+    const srcs = plugin.settings.calendarSources;
+    srcs.forEach(s => {
+      new Setting(containerEl)
+        .setName(s.path)
+        .addToggle(t => t
+          .setTooltip("Ativa")
+          .setValue(s.on)
+          .onChange(async v => { s.on = v; await plugin.saveSettings(); plugin.rerenderDashboards(); }))
+        .addColorPicker(c => c
+          .setValue(s.color)
+          .onChange(async v => { s.color = v; await plugin.saveSettings(); plugin.rerenderDashboards(); }))
+        .addExtraButton(b => b
+          .setIcon("trash-2").setTooltip("Remover fonte")
+          .onClick(async () => {
+            plugin.settings.calendarSources = srcs.filter(x => x !== s);
+            await plugin.saveSettings();
+            plugin.rerenderDashboards();
+            this.display();
+          }));
+    });
+
+    const used = new Set(srcs.map(s => s.path));
+    const available = allFolderPaths(this.app).filter(p => !used.has(p));
+    if (available.length) {
+      new Setting(containerEl)
+        .setName("Adicionar fonte")
+        .setDesc("Escolha uma pasta do cofre para alimentar a Semana.")
+        .addDropdown(d => {
+          d.addOption("", "Escolha uma pasta…");
+          for (const p of available) d.addOption(p, p);
+          d.onChange(async v => {
+            if (!v) return;
+            const color = ACCENTS[plugin.settings.calendarSources.length % ACCENTS.length];
+            plugin.settings.calendarSources.push({ path: v, color, on: true });
+            await plugin.saveSettings();
+            plugin.rerenderDashboards();
+            this.display();
+          });
+        });
+    }
+
     containerEl.createEl("h3", { text: "Integração Todoist" });
 
     new Setting(containerEl)

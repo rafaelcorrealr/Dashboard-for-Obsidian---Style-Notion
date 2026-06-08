@@ -17,7 +17,7 @@ Plugin Obsidian pessoal para o Second Brain. Exibe um dashboard com cards por pa
 - Pastas PARA (Inbox, Projects, Areas, Resources, Archive) têm cor e ícone fixos; demais recebem cor por hash do nome
 - Barra de progresso `reviewed` na base de cada card (X/Y notas revisadas)
 - Imagem de capa configurável
-- Ocultar/restaurar qualquer card
+- Mostrar/ocultar cada card pelas **Configurações** do plugin (ver abaixo)
 
 ### Navegador inline
 - Clicar num card abre painel de subpastas abaixo do grid, sem trocar de view
@@ -26,11 +26,12 @@ Plugin Obsidian pessoal para o Second Brain. Exibe um dashboard com cards por pa
 - Lista/grid de notas da pasta atual com indicador `reviewed` e toggle de visualização
 - Filtro "pendentes": mostra só notas com `reviewed: false`
 
-### Seções (reordenáveis e ocultáveis)
+### Seções (reordenáveis e ocultáveis pelas Configurações)
 
 A coluna **Nome no dashboard** é o título que aparece na tela; **id** é o valor usado em
-`sectionOrder` no `data.json`. (Antes esta tabela listava só os ids internos, que não batem
-com o que o usuário vê — por isso a correção.)
+`sectionOrder` no `data.json`. A **ordem** e a **visibilidade** de cada seção são
+ajustadas em **Configurações → Werus Dashboard → Seções do dashboard** (a dashboard em si
+não tem mais setas ▲▼ nem botões de ocultar durante o uso).
 
 | Nome no dashboard | id (`sectionOrder`) | Conteúdo |
 |---|---|---|
@@ -40,8 +41,17 @@ com o que o usuário vê — por isso a correção.)
 | SINCRONIZAÇÃO | `sync` | Saúde do Syncthing (pasta + aparelhos) via API + lista de conflitos |
 | ATIVIDADE DO COFRE | `heatmap` | Heatmap de notas criadas/dia via plugin Heatmap Calendar |
 | CRESCIMENTO DO COFRE | `growth` | Notas criadas/dia nos últimos 30 dias; modo cumulativo disponível |
-| RELATÓRIOS CLAUDE | `reports` | Últimos 6 relatórios Claude de `40.Archive/Relatórios Claude/` |
-| Semana N | `calendar` | Calendário semanal navegável com notas do dia (`date:`) |
+| Semana N | `calendar` | Calendário semanal com notas das **fontes** configuradas (cards por dia) |
+
+### Configurações (administração da aparência)
+
+Toda a configuração de exibição fica em **Configurações → Werus Dashboard**:
+
+- **Exibição do dashboard:** modo **compacto** (layout mais denso).
+- **Seções do dashboard:** mostrar/ocultar e **reordenar** (▲▼) cada seção.
+- **Pastas exibidas (cards do Cofre):** mostrar/ocultar cada pasta de topo.
+- **Fontes da Semana:** ativar/desativar, escolher a **cor** e **remover** cada fonte; **adicionar** qualquer pasta do cofre. As notas das fontes ativas aparecem como cards nos dias da Semana (posição pela data da nota).
+- Além disso: token do **Todoist** + exibição das tarefas, e a **Sincronização** (Syncthing).
 
 ### Integração Todoist
 - **3 caixas lado a lado por urgência:** **Atrasadas** (vermelha) · **Hoje** (destaque) · **Próximos N dias** (lista agrupada por dia, com sub-título por dia). Tarefas além da janela ficam em **"Depois"** (recolhível, abaixo). Cada linha tem **prioridade colorida** (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4)
@@ -117,8 +127,8 @@ Acende o ícone de aviso no card da pasta (cor pelo nível). Ausente → sem avi
 ### Imagem de capa (fallback)
 Se o `status.md` não tiver `cover:`, o plugin procura um arquivo chamado `_cover` (qualquer extensão de imagem: `.png`, `.jpg`, `.webp`, `.gif`, `.svg`) na pasta. Se também não houver `_cover`, os cards do topo (PARA) recebem uma capa padrão: gradiente da cor de acento com o ícone da pasta como marca d'água.
 
-### Relatórios Claude
-Notas em `40.Archive/Relatórios Claude/` com frontmatter `date: YYYY-MM-DD` aparecem na seção Relatórios.
+### Fontes da Semana
+As notas das pastas marcadas como **fonte** (Configurações → Fontes da Semana) aparecem como cards nos dias da Semana, cada fonte com sua cor. Padrão: `40.Archive/Relatórios Claude` e `50.Diário`. A posição vem do `date: YYYY-MM-DD` do frontmatter (ou da data no nome do arquivo).
 
 ### Calendário e notas diárias
 Notas com frontmatter `date: YYYY-MM-DD` aparecem como pílulas no dia correspondente do calendário semanal.

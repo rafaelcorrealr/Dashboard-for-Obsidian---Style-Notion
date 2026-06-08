@@ -46,21 +46,6 @@ body {
   gap: 12px;
 }
 
-.wd-compact-toggle {
-  font-family: var(--font-monospace, monospace);
-  font-size: 10px;
-  letter-spacing: 1px;
-  color: var(--wd-text-faint);
-  cursor: pointer;
-  padding: 5px 10px;
-  border-radius: 6px;
-  border: 1px solid var(--wd-border);
-  white-space: nowrap;
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-  user-select: none;
-}
-.wd-compact-toggle:hover { background: var(--wd-border); color: var(--wd-accent); border-color: var(--wd-accent); }
-
 .wd-date {
   font-family: var(--font-monospace, monospace);
   font-size: 10px;
@@ -126,45 +111,8 @@ body {
 }
 .wd-sec-head .wd-sec-label { margin-bottom: 0; }
 
-/* Controles de reordenar seção (▲ ▼) */
-.wd-move-ctrl { display: flex; align-items: center; gap: 2px; }
-
-.wd-move-btn {
-  font-size: 10px;
-  color: var(--wd-text-faint);
-  cursor: pointer;
-  padding: 3px 7px;
-  border-radius: 5px;
-  border: 1px solid var(--wd-border);
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-  user-select: none;
-}
-.wd-move-btn:hover { background: var(--wd-border); color: var(--wd-accent); border-color: var(--wd-accent); }
-
-.wd-move-off {
-  opacity: 0.25;
-  cursor: default;
-  pointer-events: none;
-}
-
-/* Agrupa controles (mover + ocultar) no cabeçalho da seção */
+/* Agrupa os controles de uso (refresh, filtros, toggles) no cabeçalho da seção */
 .wd-sec-ctrls { display: flex; align-items: center; gap: 6px; }
-
-/* Botão de ocultar uma seção inteira (calendário / relatórios) */
-.wd-sec-hide {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  color: var(--wd-text-faint);
-  cursor: pointer;
-  padding: 3px 7px;
-  border-radius: 5px;
-  border: 1px solid var(--wd-border);
-  transition: background 0.15s, color 0.15s, border-color 0.15s;
-}
-.wd-sec-hide:hover { background: var(--wd-border); color: #FF6B4B; border-color: #FF6B4B; }
-.wd-sec-hide svg { width: 13px; height: 13px; }
-.wd-cal-ctrls .wd-sec-hide { margin-left: 4px; }
 
 /* Sub-rótulo dentro de uma seção (ex.: "arquivos na raiz") */
 .wd-sub-label {
@@ -175,64 +123,6 @@ body {
   text-transform: uppercase;
   margin: 16px 0 8px;
 }
-
-/* Botão de ocultar no canto do card (aparece no hover) */
-.wd-hide-btn {
-  position: absolute;
-  top: 6px;
-  left: 6px;
-  z-index: 3;
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 6px;
-  background: var(--wd-surface);
-  color: var(--wd-text-muted);
-  opacity: 0;
-  cursor: pointer;
-  transition: opacity 0.15s, color 0.15s, background 0.15s;
-}
-.wd-card:hover .wd-hide-btn { opacity: 1; }
-.wd-hide-btn:hover { background: var(--wd-border); color: #FF6B4B; }
-.wd-hide-btn svg { width: 14px; height: 14px; }
-
-/* Barra de itens ocultos (chips clicáveis para restaurar) */
-.wd-hidden-bar {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 6px;
-  margin-top: 18px;
-  padding-top: 14px;
-  border-top: 1px solid var(--wd-surface-2);
-}
-
-.wd-hidden-label {
-  font-family: var(--font-monospace, monospace);
-  font-size: 9px;
-  letter-spacing: 2px;
-  color: var(--wd-text-faint);
-  text-transform: uppercase;
-}
-
-.wd-hidden-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  color: var(--wd-text-muted);
-  background: var(--wd-surface-2);
-  border: 1px solid var(--wd-border);
-  border-radius: 12px;
-  padding: 3px 11px;
-  cursor: pointer;
-  transition: border-color 0.15s, color 0.15s;
-}
-.wd-hidden-chip:hover { border-color: #10B981; color: #10B981; }
-.wd-chip-icon { display: inline-flex; align-items: center; }
-.wd-hidden-chip svg { width: 12px; height: 12px; }
 
 /* Ícone dentro do breadcrumb */
 .wd-crumb-icon { display: inline-flex; align-items: center; margin-right: 5px; }
@@ -253,7 +143,6 @@ body {
   align-items: center;
   gap: 2px;
 }
-.wd-cal-ctrls .wd-move-ctrl { margin-left: 8px; }
 
 .wd-cal-arrow {
   font-size: 18px;
@@ -370,75 +259,6 @@ body {
 }
 .wd-cal-pill-txt { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-/* ── Seletor de fontes da Semana ──────────────────────────────────────────── */
-.wd-cal-srcbtn {
-  display: inline-flex;
-  align-items: center;
-  color: var(--wd-text-faint);
-  cursor: pointer;
-  padding: 4px 7px;
-  border-radius: 6px;
-  transition: background 0.15s, color 0.15s;
-}
-.wd-cal-srcbtn:hover { background: var(--wd-border); color: var(--wd-text); }
-.wd-cal-srcbtn.wd-on { color: var(--wd-accent); background: var(--wd-fill); }
-.wd-cal-srcbtn .wd-cal-srcico svg { width: 15px; height: 15px; }
-
-.wd-cal-srcbar {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 7px;
-  margin-bottom: 12px;
-  padding: 9px 11px;
-  background: var(--wd-surface);
-  border: 1px solid var(--wd-border);
-  border-radius: 8px;
-}
-.wd-cal-srclabel {
-  font-family: var(--font-monospace, monospace);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--wd-text-faint);
-  margin-right: 2px;
-}
-.wd-cal-srcchip {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 11px;
-  padding: 3px 8px;
-  border: 1px solid var(--wd-border);
-  border-radius: 999px;
-  color: var(--wd-text-muted);
-  cursor: pointer;
-  opacity: 0.5;
-  transition: opacity 0.15s, border-color 0.15s;
-}
-.wd-cal-srcchip.wd-on { opacity: 1; border-color: var(--wd-text-faint); color: var(--wd-text); }
-.wd-cal-srcdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
-.wd-cal-srcname { white-space: nowrap; }
-.wd-cal-srcrm {
-  font-size: 13px;
-  line-height: 1;
-  color: var(--wd-text-faint);
-  padding-left: 2px;
-}
-.wd-cal-srcrm:hover { color: #EF4444; }
-
-.wd-cal-srcadd { display: inline-flex; align-items: center; gap: 4px; }
-.wd-cal-srcaddico { color: var(--wd-text-faint); font-size: 13px; }
-.wd-cal-srcselect {
-  font-size: 11px;
-  padding: 3px 6px;
-  background: var(--wd-bg-alt);
-  color: var(--wd-text-muted);
-  border: 1px solid var(--wd-border);
-  border-radius: 6px;
-  cursor: pointer;
-  max-width: 200px;
-}
 
 .wd-cal-more {
   font-family: var(--font-monospace, monospace);
@@ -1780,16 +1600,6 @@ body {
 .wd-urgency-tip .wd-tip-row { justify-content: flex-start; }
 .wd-urgency-tip .wd-tip-date { margin-left: auto; text-transform: uppercase; }
 
-/* Chip de pasta oculta que contém notas urgentes: contorno pela cor do nível */
-.wd-hidden-chip.wd-hidden-urgent {
-  border-width: 1.5px;
-  color: var(--wd-text);
-}
-.wd-hidden-chip.wd-hidden-urgent.wd-u-alta {
-  box-shadow: 0 0 6px rgba(239, 68, 68, 0.5);
-  animation: wd-urg-pulse 1.6s ease-in-out infinite;
-}
-
 /* ── Responsivo / mobile (Fase 11) ───────────────────────────────────────────
    Telas estreitas (celular, painel estreito). Tablet em paisagem fica largo o
    bastante pra não disparar e mantém os 7 dias cheios. */
@@ -1828,8 +1638,6 @@ body {
 .is-phone .wd-todo-check { width: 18px; height: 18px; }
 .is-phone .wd-todo-row { padding: 8px; }
 .is-phone .wd-cal-pill { padding: 5px 8px; }
-.is-phone .wd-sec-hide,
-.is-phone .wd-move-btn,
 .is-phone .wd-todo-refresh,
 .is-phone .wd-todo-filterbtn { padding: 6px 9px; }
 
