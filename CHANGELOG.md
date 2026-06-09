@@ -6,6 +6,16 @@
 
 ---
 
+## [0.12.0] — alpha — 2026-06-08
+
+**Aba dedicada do Todoist + Pacotes de tarefas.** Primeira fase do "turbinar antes de Finanças".
+
+- **Aba dedicada do Todoist** (área central, abre pelo ícone `list-checks` na ribbon ou pelo comando "Abrir Todoist"): mostra os **pacotes** no topo + a mesma lista de tarefas do dashboard. Não é barra lateral.
+- **Atalho no dashboard:** a seção TAREFAS ganhou um botão (`↗`) no cabeçalho que **abre a aba do Todoist** (o dashboard é o hub de navegação).
+- **Pacotes de tarefas:** conjuntos nomeados de tarefas que você **lança no Todoist num clique** (todas com data de hoje). Configurados em **Configurações → Werus Dashboard → Pacotes de tarefas** (nome, ícone opcional, projeto padrão e as tarefas — uma por linha). Lançados na aba do Todoist.
+- **"Semana" virou "Relatórios"** (o nome antigo dava a impressão de um resumo da semana, mas é só o relatório das IAs/diário). Ids internos inalterados.
+- **Refactor interno:** toda a lógica do Todoist saiu do `DashboardView` para um `TodoistController` compartilhado — o dashboard e a aba usam o mesmo código (sem duplicação). Comportamento da seção TAREFAS do dashboard inalterado.
+
 ## [0.11.0] — alpha — 2026-06-08
 
 **Controles de exibição migram para as Configurações.** A dashboard fica limpa para o uso do dia a dia; quem administra a aparência faz isso na aba **Configurações → Werus Dashboard**. (Nada muda na identidade visual Notion-like.)

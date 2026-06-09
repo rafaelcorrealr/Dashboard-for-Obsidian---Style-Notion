@@ -1,6 +1,12 @@
 import { App, Component, ItemView, MarkdownRenderer, Modal, Notice, Platform, Plugin, PluginSettingTab, Setting, TFile, TFolder, WorkspaceLeaf, requestUrl, setIcon } from "obsidian";
 
 const VIEW_TYPE = "werus-dashboard";
+const TODOIST_VIEW_TYPE = "werus-todoist";
+
+// uid curto e estável (pacotes de tarefas).
+function uid(): string {
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+}
 
 type Status = "progress" | "paused" | "cancelled";
 type SectionId = "calendar" | "para" | "heatmap" | "growth" | "stats" | "todoist" | "sync";
@@ -18,6 +24,17 @@ interface CalSource {
   on: boolean;     // marcada = aparece na semana
 }
 
+// Pacote de tarefas: um conjunto nomeado de tarefas que se lança no Todoist
+// num clique (na aba Todoist), todas com data de hoje.
+interface TaskPackage {
+  id: string;            // uid estável
+  name: string;          // "Manhã"
+  icon?: string;         // lucide/emoji opcional
+  tasks: string[];       // conteúdos das tarefas (1 por linha)
+  projectId?: string;    // projeto padrão (vazio = Entrada/Inbox)
+  labels?: string[];     // etiquetas padrão (opcional)
+}
+
 interface DashSettings {
   sectionOrder: SectionId[];
   compact: boolean;
@@ -33,6 +50,7 @@ interface DashSettings {
   syncthingApiKey: string;       // X-API-Key (fora do Git)
   syncthingFolderId: string;     // id da pasta; vazio = autodetecta
   syncthingShowCounts: boolean;  // mostrar "sincronizados / total" de itens por aparelho
+  taskPackages: TaskPackage[];   // pacotes de tarefas (lançar no Todoist)
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
@@ -53,6 +71,7 @@ const DEFAULT_SETTINGS: DashSettings = {
   syncthingApiKey: "",
   syncthingFolderId: "",
   syncthingShowCounts: false,
+  taskPackages: [],
 };
 
 interface ParaSection {
@@ -105,7 +124,7 @@ const SECTION_LABEL: Record<SectionId, string> = {
   sync:     "Sincronização",
   heatmap:  "Atividade do cofre",
   growth:   "Crescimento do cofre",
-  calendar: "Semana",
+  calendar: "Relatórios",
 };
 
 // ── Todoist ─────────────────────────────────────────────────────────────────
@@ -610,6 +629,453 @@ function revealInExplorer(app: App, target: unknown) {
 
 // ── View ──────────────────────────────────────────────────────────────────────
 
+// ── Controlador do Todoist (compartilhado: dashboard + aba dedicada) ──────────
+// Detém o estado das tarefas, a busca, a renderização da lista e as ações
+// (criar/editar/concluir/excluir). `rerender` é o callback da view dona (re-render
+// completo). Tem tooltip próprio para não depender da view.
+class TodoistController {
+  private tasks: TodoistTask[] = [];
+  private projects: TodoistProject[] = [];
+  private projectMap = new Map<string, string>();   // id → nome
+  private labelColors = new Map<string, string>();   // nome da etiqueta → hex
+  private loading = false;
+  private error: string | null = null;
+  private fetchedAt = 0;
+  private laterOpen = false;
+  private filterOpen = false;
+  private tip: HTMLElement | null = null;
+
+  constructor(
+    private app: App,
+    private plugin: WerusDashboard,
+    private component: Component,
+    private rerender: () => void,
+  ) {}
+
+  reset() {
+    this.tasks = [];
+    this.projects = [];
+    this.projectMap = new Map();
+    this.labelColors = new Map();
+    this.fetchedAt = 0;
+    this.error = null;
+    this.loading = false;
+    this.rerender();
+  }
+
+  hideTip() { if (this.tip) { this.tip.remove(); this.tip = null; } }
+
+  private dayRange(): 3 | 7 {
+    return this.plugin.settings.todoistDayRange === 3 ? 3 : 7;
+  }
+
+  private applyFilters(tasks: TodoistTask[]): TodoistTask[] {
+    const f = this.plugin.settings.todoistFilters;
+    if (!f.projects.length && !f.labels.length) return tasks;
+    const ps = new Set(f.projects), ls = new Set(f.labels);
+    return tasks.filter(t => {
+      if (ps.size && !(t.project_id && ps.has(t.project_id))) return false;
+      if (ls.size && !(t.labels ?? []).some(l => ls.has(l))) return false;
+      return true;
+    });
+  }
+
+  private toggleFilter(kind: "projects" | "labels", id: string) {
+    const arr = this.plugin.settings.todoistFilters[kind];
+    const i = arr.indexOf(id);
+    if (i >= 0) arr.splice(i, 1); else arr.push(id);
+  }
+
+  private labelColor(name: string): string {
+    return this.labelColors.get(name) ?? LABEL_FALLBACK;
+  }
+
+  private labelChip(host: HTMLElement, name: string, cls: string): HTMLElement {
+    const chip = host.createSpan({ cls });
+    chip.createSpan({ cls: "wd-label-dot" }).style.background = this.labelColor(name);
+    chip.createSpan({ text: `@${name}` });
+    return chip;
+  }
+
+  private positionTip(tip: HTMLElement, target: HTMLElement) {
+    const rect = target.getBoundingClientRect();
+    const tw = tip.offsetWidth, th = tip.offsetHeight;
+    let left = rect.left;
+    let top = rect.bottom + 6;
+    if (left + tw > window.innerWidth - 8) left = window.innerWidth - tw - 8;
+    if (top + th > window.innerHeight - 8) top = rect.top - th - 6;
+    tip.style.left = `${Math.max(8, left)}px`;
+    tip.style.top  = `${Math.max(8, top)}px`;
+  }
+
+  private showTaskTip(target: HTMLElement, t: TodoistTask) {
+    this.hideTip();
+    const tip = document.body.createDiv({ cls: "wd-tooltip wd-task-tip" });
+    const head = tip.createDiv({ cls: "wd-task-tip-head" });
+    head.createSpan({ cls: "wd-task-tip-pri" }).style.background = priMeta(t.priority).color;
+    head.createSpan({ cls: "wd-task-tip-title", text: t.content });
+    if (hasDesc(t)) {
+      const d = t.description!.trim();
+      tip.createDiv({ cls: "wd-task-tip-desc", text: d.length > DESC_MAX ? d.slice(0, DESC_MAX) + "…" : d });
+    }
+    this.tip = tip;
+    this.positionTip(tip, target);
+  }
+
+  private attachTaskTip(el: HTMLElement, t: TodoistTask) {
+    el.addEventListener("mouseenter", () => this.showTaskTip(el, t));
+    el.addEventListener("mouseleave", () => this.hideTip());
+  }
+
+  private todoCheck(host: HTMLElement, t: TodoistTask) {
+    const check = host.createSpan({ cls: "wd-todo-check" });
+    check.setAttr("title", "Concluir tarefa");
+    check.onclick = e => { e.stopPropagation(); void this.completeTask(t); };
+  }
+
+  private todoRow(list: HTMLElement, t: TodoistTask, showDate = true) {
+    const pri = priMeta(t.priority);
+    const row = list.createDiv({ cls: "wd-todo-row" });
+    row.style.setProperty("--pri", pri.color);
+    this.todoCheck(row, t);
+    const tag = row.createSpan({ cls: "wd-todo-pri", text: pri.label });
+    tag.style.background = pri.color;
+    row.createSpan({ cls: "wd-todo-row-txt", text: t.content });
+    if (hasDesc(t)) setIcon(row.createSpan({ cls: "wd-todo-hasdesc" }), "align-left");
+    const proj = t.project_id ? this.projectMap.get(t.project_id) : undefined;
+    if (this.plugin.settings.todoistShowProject && proj) row.createSpan({ cls: "wd-todo-row-proj", text: proj });
+    if (this.plugin.settings.todoistShowLabels)
+      for (const l of t.labels ?? []) this.labelChip(row, l, "wd-todo-row-label");
+    const dk = dueKey(t);
+    if (showDate && dk) {
+      const [, m, d] = dk.split("-");
+      row.createSpan({ cls: "wd-todo-row-date", text: `${d}/${m}` });
+    }
+    if (t.due?.is_recurring) row.createSpan({ cls: "wd-todo-recur", text: "⟳" });
+    row.onclick = () => this.openTaskDetail(t);
+    this.attachTaskTip(row, t);
+  }
+
+  private addTaskBtn(host: HTMLElement, prefillDue?: string, title = "Nova tarefa") {
+    const b = host.createSpan({ cls: "wd-todo-add" });
+    setIcon(b, "plus");
+    b.setAttr("title", title);
+    b.onclick = e => { e.stopPropagation(); this.openTaskForm({ mode: "create", prefillDue }); };
+    return b;
+  }
+
+  private openTaskForm(opts: { mode: "create" | "edit"; task?: TodoistTask; prefillDue?: string }) {
+    this.hideTip();
+    const labels = [...new Set([...this.labelColors.keys(), ...this.tasks.flatMap(t => t.labels ?? [])])].sort((a, b) => a.localeCompare(b));
+    new TaskFormModal(this.app, {
+      mode: opts.mode,
+      task: opts.task,
+      prefillDue: opts.prefillDue,
+      projects: this.projects,
+      labels,
+      labelColor: n => this.labelColor(n),
+      submit: v => this.submitTaskForm(opts.mode, opts.task, v),
+      remove: opts.task ? () => this.deleteTask(opts.task!) : undefined,
+      complete: opts.task ? () => void this.completeTask(opts.task!) : undefined,
+    }).open();
+  }
+
+  private openTaskDetail(t: TodoistTask) {
+    this.hideTip();
+    new TaskDetailModal(this.app, this.component, {
+      task: t,
+      projectName: t.project_id ? this.projectMap.get(t.project_id) : undefined,
+      labelColor: n => this.labelColor(n),
+      edit: () => this.openTaskForm({ mode: "edit", task: t }),
+      complete: () => void this.completeTask(t),
+    }).open();
+  }
+
+  private async submitTaskForm(mode: "create" | "edit", task: TodoistTask | undefined, v: TaskFormValues): Promise<boolean> {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) return false;
+    try {
+      if (mode === "create") {
+        const fields: TodoistWrite = { content: v.content, priority: v.priority };
+        if (v.description.trim()) fields.description = v.description.trim();
+        if (v.dueDate) fields.due_date = v.dueDate;
+        if (v.projectId) fields.project_id = v.projectId;
+        if (v.labels.length) fields.labels = v.labels;
+        await createTodoistTask(token, fields);
+        new Notice(`✓ Criada: ${v.content}`);
+      } else if (task) {
+        const fields: TodoistWrite = {};
+        if (v.content !== task.content) fields.content = v.content;
+        if (v.description !== (task.description ?? "")) fields.description = v.description;
+        if (v.priority !== task.priority) fields.priority = v.priority;
+        const oldDate = task.due?.date ? task.due.date.substring(0, 10) : "";
+        if (v.dueDate !== oldDate) {
+          if (v.dueDate) fields.due_date = v.dueDate;
+          else fields.due_string = "no date";
+        }
+        const oldL = (task.labels ?? []).slice().sort().join(" ");
+        const newL = v.labels.slice().sort().join(" ");
+        if (oldL !== newL) fields.labels = v.labels;
+        if (Object.keys(fields).length) await updateTodoistTask(token, task.id, fields);
+        const oldProj = task.project_id ?? "";
+        if (v.projectId !== oldProj && v.projectId) await moveTodoistTask(token, task.id, v.projectId);
+        new Notice(`✓ Salva: ${v.content}`);
+      }
+      await this.fetch(true);
+      return true;
+    } catch (e) {
+      new Notice(`Falha ao salvar: ${e instanceof Error ? e.message : String(e)}`);
+      return false;
+    }
+  }
+
+  private async deleteTask(t: TodoistTask): Promise<boolean> {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) return false;
+    const idx = this.tasks.findIndex(x => x.id === t.id);
+    if (idx >= 0) this.tasks.splice(idx, 1);
+    this.rerender();
+    try {
+      await deleteTodoistTask(token, t.id);
+      new Notice(`🗑 Excluída: ${t.content}`);
+      return true;
+    } catch (e) {
+      if (idx >= 0) this.tasks.splice(idx, 0, t);
+      new Notice(`Falha ao excluir: ${e instanceof Error ? e.message : String(e)}`);
+      this.rerender();
+      return false;
+    }
+  }
+
+  private async completeTask(t: TodoistTask) {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) return;
+    const idx = this.tasks.findIndex(x => x.id === t.id);
+    if (idx >= 0) this.tasks.splice(idx, 1);
+    this.rerender();
+    try {
+      await closeTodoistTask(token, t.id);
+      new Notice(`✓ Concluída: ${t.content}`);
+    } catch (e) {
+      if (idx >= 0) this.tasks.splice(idx, 0, t);
+      new Notice(`Falha ao concluir: ${e instanceof Error ? e.message : String(e)}`);
+      this.rerender();
+    }
+  }
+
+  async fetch(manual: boolean) {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token || this.loading) return;
+    this.loading = true;
+    this.error = null;
+    if (manual) this.rerender();
+    try {
+      const [tasks, projects, labels] = await Promise.all([
+        fetchTodoistTasks(token),
+        fetchTodoistProjects(token).catch(() => [] as TodoistProject[]),
+        fetchTodoistLabels(token).catch(() => [] as TodoistLabel[]),
+      ]);
+      this.tasks = tasks;
+      this.projects = projects;
+      this.projectMap = new Map(projects.map(p => [p.id, p.name]));
+      this.labelColors = new Map(labels.map(l => [l.name, TODOIST_COLORS[l.color] ?? LABEL_FALLBACK]));
+      this.fetchedAt = Date.now();
+    } catch (e) {
+      this.error = e instanceof Error ? e.message : String(e);
+    } finally {
+      this.loading = false;
+      this.rerender();
+    }
+  }
+
+  // Lança um pacote: cria cada tarefa no Todoist com data de hoje. Sequencial
+  // (evita rajada na API). Atualiza a lista ao final.
+  async launchPackage(pkg: TaskPackage) {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) { new Notice("Configure o token do Todoist nas Configurações."); return; }
+    const lines = pkg.tasks.map(s => s.trim()).filter(Boolean);
+    if (!lines.length) { new Notice("Pacote sem tarefas."); return; }
+    const due = toKey(new Date());
+    let ok = 0;
+    for (const content of lines) {
+      try {
+        const fields: TodoistWrite = { content, due_date: due };
+        if (pkg.projectId) fields.project_id = pkg.projectId;
+        if (pkg.labels?.length) fields.labels = pkg.labels;
+        await createTodoistTask(token, fields);
+        ok++;
+      } catch (e) {
+        new Notice(`Falha em "${content}": ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    new Notice(`✓ ${ok}/${lines.length} tarefa(s) lançada(s) — ${pkg.name || "pacote"}`);
+    await this.fetch(true);
+  }
+
+  private renderFilterBar(host: HTMLElement) {
+    const f = this.plugin.settings.todoistFilters;
+    const bar = host.createDiv({ cls: "wd-todo-filterbar" });
+    if (this.projects.length) {
+      const grp = bar.createDiv({ cls: "wd-todo-fgroup" });
+      grp.createSpan({ cls: "wd-todo-flabel", text: "Projetos" });
+      for (const p of this.projects) {
+        const on = f.projects.includes(p.id);
+        const chip = grp.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: p.name });
+        chip.onclick = async () => { this.toggleFilter("projects", p.id); await this.plugin.saveSettings(); this.rerender(); };
+      }
+    }
+    const labels = [...new Set(this.tasks.flatMap(t => t.labels ?? []))].sort((a, b) => a.localeCompare(b));
+    if (labels.length) {
+      const grp = bar.createDiv({ cls: "wd-todo-fgroup" });
+      grp.createSpan({ cls: "wd-todo-flabel", text: "Etiquetas" });
+      for (const l of labels) {
+        const on = f.labels.includes(l);
+        const chip = this.labelChip(grp, l, "wd-todo-fchip" + (on ? " wd-on" : ""));
+        chip.onclick = async () => { this.toggleFilter("labels", l); await this.plugin.saveSettings(); this.rerender(); };
+      }
+    }
+    if (f.projects.length || f.labels.length) {
+      const clr = bar.createSpan({ cls: "wd-todo-fclear", text: "limpar filtros" });
+      clr.onclick = async () => { f.projects = []; f.labels = []; await this.plugin.saveSettings(); this.rerender(); };
+    }
+  }
+
+  // Renderiza os controles de cabeçalho (em `ctrls`) + a lista de tarefas
+  // (em `body`). O host fornece o rótulo da seção e o layout do cabeçalho.
+  renderList(body: HTMLElement, ctrls: HTMLElement) {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (token) {
+      const range = this.dayRange();
+      const seg = ctrls.createDiv({ cls: "wd-todo-range" });
+      for (const n of [3, 7] as const) {
+        const b = seg.createSpan({ cls: "wd-todo-range-btn" + (range === n ? " wd-on" : ""), text: `${n}d` });
+        b.setAttr("title", `Mostrar os próximos ${n} dias`);
+        b.onclick = async e => {
+          e.stopPropagation();
+          this.plugin.settings.todoistDayRange = n;
+          await this.plugin.saveSettings();
+          this.rerender();
+        };
+      }
+      const f = this.plugin.settings.todoistFilters;
+      const nF = f.projects.length + f.labels.length;
+      const filt = ctrls.createSpan({ cls: "wd-todo-filterbtn" + (this.filterOpen ? " wd-on" : "") + (nF ? " wd-active" : "") });
+      setIcon(filt, "filter");
+      filt.setAttr("title", nF ? `Filtros ativos (${nF}) — clique para ajustar` : "Filtrar por projeto/etiqueta");
+      if (nF) filt.createSpan({ cls: "wd-todo-filtct", text: String(nF) });
+      filt.onclick = e => { e.stopPropagation(); this.filterOpen = !this.filterOpen; this.rerender(); };
+      const refresh = ctrls.createSpan({ cls: "wd-todo-refresh" + (this.loading ? " wd-spin" : "") });
+      setIcon(refresh, "refresh-cw");
+      refresh.setAttr("title", "Atualizar tarefas do Todoist");
+      refresh.onclick = e => { e.stopPropagation(); void this.fetch(true); };
+      this.addTaskBtn(ctrls, undefined, "Nova tarefa");
+    }
+
+    if (!token) {
+      body.createDiv({ cls: "wd-empty", text: "Cole seu token do Todoist em Configurações → Werus Dashboard para ver suas tarefas aqui." });
+      return;
+    }
+
+    if (!this.fetchedAt && !this.loading && !this.error) void this.fetch(false);
+    if (this.error) { body.createDiv({ cls: "wd-empty wd-todo-error", text: `Erro ao buscar tarefas: ${this.error}` }); return; }
+    if (!this.fetchedAt) { body.createDiv({ cls: "wd-empty", text: "Carregando tarefas…" }); return; }
+
+    if (this.filterOpen) this.renderFilterBar(body);
+
+    const range = this.dayRange();
+    const todayK = toKey(new Date());
+    const lastUpcoming = new Date();
+    lastUpcoming.setDate(lastUpcoming.getDate() + range);
+    const lastK = toKey(lastUpcoming);
+
+    const tasks = this.applyFilters(this.tasks);
+    const overdue: TodoistTask[] = [];
+    const todayTasks: TodoistTask[] = [];
+    const byDay: Record<string, TodoistTask[]> = {};
+    const later: TodoistTask[] = [];
+    for (const t of tasks) {
+      const dk = dueKey(t);
+      if (!dk) continue;
+      if (dk < todayK) overdue.push(t);
+      else if (dk === todayK) todayTasks.push(t);
+      else if (dk <= lastK) (byDay[dk] ??= []).push(t);
+      else later.push(t);
+    }
+    const byPri = (a: TodoistTask, b: TodoistTask) => b.priority - a.priority;
+    overdue.sort(byPri); todayTasks.sort(byPri); later.sort(byPri);
+    for (const k of Object.keys(byDay)) byDay[k].sort(byPri);
+
+    const visible = overdue.length + todayTasks.length + later.length + Object.values(byDay).reduce((s, a) => s + a.length, 0);
+    if (visible === 0) {
+      const all = this.tasks.length;
+      body.createDiv({ cls: "wd-empty", text: all ? "Nenhuma tarefa bate com os filtros." : "Nenhuma tarefa com data no Todoist. 🎉" });
+      return;
+    }
+
+    const cols = body.createDiv({ cls: "wd-todo-cols" });
+
+    const obox = cols.createDiv({ cls: "wd-todo-box wd-box-overdue" });
+    const ohd = obox.createDiv({ cls: "wd-todo-boxhd" });
+    ohd.createSpan({ cls: "wd-todo-boxwarn", text: "⚠" });
+    ohd.createSpan({ cls: "wd-todo-boxlabel", text: "Atrasadas" });
+    ohd.createSpan({ cls: "wd-todo-boxcount", text: String(overdue.length) });
+    const obody = obox.createDiv({ cls: "wd-todo-boxbody" });
+    if (overdue.length) for (const t of overdue) this.todoRow(obody, t);
+    else obody.createDiv({ cls: "wd-todo-boxempty", text: "Nenhuma. 👍" });
+
+    const tbox = cols.createDiv({ cls: "wd-todo-box wd-box-today" });
+    const thd = tbox.createDiv({ cls: "wd-todo-boxhd" });
+    thd.createSpan({ cls: "wd-todo-boxlabel", text: "Hoje" });
+    this.addTaskBtn(thd, "hoje", "Nova tarefa para hoje");
+    thd.createSpan({ cls: "wd-todo-boxcount", text: String(todayTasks.length) });
+    const tbody = tbox.createDiv({ cls: "wd-todo-boxbody" });
+    if (todayTasks.length) for (const t of todayTasks) this.todoRow(tbody, t);
+    else tbody.createDiv({ cls: "wd-todo-boxempty", text: "Nada para hoje." });
+
+    let upcomingCount = 0;
+    const upDays: { dow: number; num: number; key: string; items: TodoistTask[] }[] = [];
+    for (let i = 1; i <= range; i++) {
+      const day = new Date();
+      day.setDate(day.getDate() + i);
+      const key = toKey(day);
+      const items = byDay[key];
+      if (!items?.length) continue;
+      upcomingCount += items.length;
+      upDays.push({ dow: (day.getDay() + 6) % 7, num: day.getDate(), key, items });
+    }
+    const ubox = cols.createDiv({ cls: "wd-todo-box wd-box-upcoming" });
+    const uhd = ubox.createDiv({ cls: "wd-todo-boxhd" });
+    uhd.createSpan({ cls: "wd-todo-boxlabel", text: `Próximos ${range} dias` });
+    this.addTaskBtn(uhd, undefined, "Nova tarefa");
+    uhd.createSpan({ cls: "wd-todo-boxcount", text: String(upcomingCount) });
+    const ubody = ubox.createDiv({ cls: "wd-todo-boxbody" });
+    if (upDays.length) {
+      for (const g of upDays) {
+        const dh = ubody.createDiv({ cls: "wd-todo-dayhd" + (g.dow >= 5 ? " wd-weekend" : "") });
+        dh.createSpan({ cls: "wd-todo-dayname", text: DAY_SHORT[g.dow] });
+        dh.createSpan({ cls: "wd-todo-daynum", text: String(g.num) });
+        this.addTaskBtn(dh, g.key, `Nova tarefa em ${g.num}`);
+        for (const t of g.items) this.todoRow(ubody, t, false);
+      }
+    } else {
+      ubody.createDiv({ cls: "wd-todo-boxempty", text: `Nada nos próximos ${range} dias.` });
+    }
+
+    if (later.length) {
+      const panel = body.createDiv({ cls: "wd-todo-later" });
+      const lhd = panel.createDiv({ cls: "wd-todo-ohd" });
+      lhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
+      lhd.createSpan({ cls: "wd-todo-otitle", text: `Depois (${later.length})` });
+      lhd.createSpan({ cls: "wd-todo-otoggle", text: this.laterOpen ? "ocultar ▾" : "mostrar ›" });
+      lhd.onclick = () => { this.laterOpen = !this.laterOpen; this.rerender(); };
+      if (this.laterOpen) {
+        const list = panel.createDiv({ cls: "wd-todo-olist" });
+        for (const t of later) this.todoRow(list, t);
+      }
+    }
+  }
+}
+
 class DashboardView extends ItemView {
   private weekOffset = 0;
   private navPath: string | null = null;
@@ -619,16 +1085,8 @@ class DashboardView extends ItemView {
   private reviewFilter = false;
   private growthCumulative = false;
 
-  // Estado da integração Todoist
-  private todoistTasks: TodoistTask[] = [];
-  private todoistProjects: TodoistProject[] = [];
-  private todoistProjectMap = new Map<string, string>();   // id → nome
-  private todoistLabelColor = new Map<string, string>();   // nome da etiqueta → hex
-  private todoistLoading = false;
-  private todoistError: string | null = null;
-  private todoistFetchedAt = 0;
-  private todoistLaterOpen = false;
-  private todoistFilterOpen = false;
+  // Integração Todoist — toda a lógica vive no controlador compartilhado.
+  readonly todo: TodoistController;
 
   // Estado do Syncthing (v0.10.0)
   private syncData: SyncData | null = null;
@@ -637,7 +1095,10 @@ class DashboardView extends ItemView {
   private syncFetchedAt = 0;
   private conflictConfirm: string | null = null;   // path do conflito aguardando confirmação
 
-  constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) { super(leaf); }
+  constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) {
+    super(leaf);
+    this.todo = new TodoistController(this.app, this.plugin, this, () => this.render());
+  }
 
   getViewType()    { return VIEW_TYPE; }
   getDisplayText() { return "Dashboard"; }
@@ -649,7 +1110,7 @@ class DashboardView extends ItemView {
       this.registerEvent(this.app.vault.on(ev as "modify", () => this.schedule()));
   }
 
-  async onClose() { this.hideTip(); }
+  async onClose() { this.hideTip(); this.todo.hideTip(); }
 
   // Re-render público — chamado pelo plugin quando a configuração muda na aba
   // de Configurações (ordem das seções, ocultar/mostrar, fontes da Semana).
@@ -668,6 +1129,7 @@ class DashboardView extends ItemView {
 
   async render() {
     this.hideTip();
+    this.todo.hideTip();
     const root = this.contentEl;
     root.empty();
     root.addClass("wd-root");
@@ -802,7 +1264,7 @@ class DashboardView extends ItemView {
       const last = new Date(dayAnchor); last.setDate(dayAnchor.getDate() + 2);
       nav.createSpan({ cls: "wd-cal-week-label", text: `${fmtDM(dayAnchor)} – ${fmtDM(last)}` });
     } else {
-      nav.createSpan({ cls: "wd-cal-week-label", text: `Semana ${weekNum}` });
+      nav.createSpan({ cls: "wd-cal-week-label", text: `Relatórios · semana ${weekNum}` });
     }
 
     const ctrls = nav.createDiv({ cls: "wd-cal-ctrls" });
@@ -1369,426 +1831,20 @@ permissions:
     });
   }
 
-  // ── Todoist (Fase 8.1 — leitura) ──────────────────────────────────────────
+  // ── Todoist (delegado ao TodoistController compartilhado) ──────────────────
 
   private renderTodoist(root: HTMLElement) {
     if (this.isHidden(SEC_TODO)) return;
-
     const sec = root.createDiv({ cls: "wd-section wd-todo-section" });
     const head = sec.createDiv({ cls: "wd-sec-head" });
     head.createDiv({ cls: "wd-sec-label", text: "TAREFAS" });
     const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
-
-    const token = this.plugin.settings.todoistToken.trim();
-    if (token) {
-      // Toggle de janela "próximos dias" (3 / 7).
-      const range = this.dayRange();
-      const seg = ctrls.createDiv({ cls: "wd-todo-range" });
-      for (const n of [3, 7] as const) {
-        const b = seg.createSpan({ cls: "wd-todo-range-btn" + (range === n ? " wd-on" : ""), text: `${n}d` });
-        b.setAttr("title", `Mostrar os próximos ${n} dias`);
-        b.onclick = async e => {
-          e.stopPropagation();
-          this.plugin.settings.todoistDayRange = n;
-          await this.plugin.saveSettings();
-          this.render();
-        };
-      }
-
-      // Botão de filtros (projeto/etiqueta).
-      const f = this.plugin.settings.todoistFilters;
-      const nF = f.projects.length + f.labels.length;
-      const filt = ctrls.createSpan({ cls: "wd-todo-filterbtn" + (this.todoistFilterOpen ? " wd-on" : "") + (nF ? " wd-active" : "") });
-      setIcon(filt, "filter");
-      filt.setAttr("title", nF ? `Filtros ativos (${nF}) — clique para ajustar` : "Filtrar por projeto/etiqueta");
-      if (nF) filt.createSpan({ cls: "wd-todo-filtct", text: String(nF) });
-      filt.onclick = e => { e.stopPropagation(); this.todoistFilterOpen = !this.todoistFilterOpen; this.render(); };
-
-      const refresh = ctrls.createSpan({ cls: "wd-todo-refresh" + (this.todoistLoading ? " wd-spin" : "") });
-      setIcon(refresh, "refresh-cw");
-      refresh.setAttr("title", "Atualizar tarefas do Todoist");
-      refresh.onclick = e => { e.stopPropagation(); void this.fetchTodoist(true); };
-
-      this.addTaskBtn(ctrls, undefined, "Nova tarefa");
-    }
-
-    if (!token) {
-      sec.createDiv({ cls: "wd-empty", text: "Cole seu token do Todoist em Configurações → Werus Dashboard para ver suas tarefas aqui." });
-      return;
-    }
-
-    // Primeira carga preguiçosa (não refaz em loop se já buscou ou se deu erro).
-    if (!this.todoistFetchedAt && !this.todoistLoading && !this.todoistError) void this.fetchTodoist(false);
-
-    if (this.todoistError) {
-      sec.createDiv({ cls: "wd-empty wd-todo-error", text: `Erro ao buscar tarefas: ${this.todoistError}` });
-      return;
-    }
-    if (!this.todoistFetchedAt) {
-      sec.createDiv({ cls: "wd-empty", text: "Carregando tarefas…" });
-      return;
-    }
-
-    // Barra de filtros (recolhível).
-    if (this.todoistFilterOpen) this.renderTodoFilterBar(sec);
-
-    const range = this.dayRange();
-    const todayK = toKey(new Date());
-    const lastUpcoming = new Date();
-    lastUpcoming.setDate(lastUpcoming.getDate() + range);
-    const lastK = toKey(lastUpcoming);   // limite dos "próximos dias" (inclusive)
-
-    // Aplica filtros e separa em baldes: atrasadas · hoje · próximos N dias · depois.
-    const tasks = this.applyTodoistFilters(this.todoistTasks);
-    const overdue: TodoistTask[] = [];
-    const todayTasks: TodoistTask[] = [];
-    const byDay: Record<string, TodoistTask[]> = {};
-    const later: TodoistTask[] = [];
-    for (const t of tasks) {
-      const dk = dueKey(t);
-      if (!dk) continue;   // sem data: fora dos blocos por dia (poderá virar "Caixa de entrada" no futuro)
-      if (dk < todayK) overdue.push(t);
-      else if (dk === todayK) todayTasks.push(t);
-      else if (dk <= lastK) (byDay[dk] ??= []).push(t);
-      else later.push(t);
-    }
-    const byPri = (a: TodoistTask, b: TodoistTask) => b.priority - a.priority;
-    overdue.sort(byPri); todayTasks.sort(byPri); later.sort(byPri);
-    for (const k of Object.keys(byDay)) byDay[k].sort(byPri);
-
-    const visible = overdue.length + todayTasks.length + later.length + Object.values(byDay).reduce((s, a) => s + a.length, 0);
-    if (visible === 0) {
-      const all = this.todoistTasks.length;
-      sec.createDiv({ cls: "wd-empty", text: all ? "Nenhuma tarefa bate com os filtros." : "Nenhuma tarefa com data no Todoist. 🎉" });
-      return;
-    }
-
-    // Linha horizontal com 3 caixas lado a lado: Atrasadas · Hoje · Próximos N dias.
-    const cols = sec.createDiv({ cls: "wd-todo-cols" });
-
-    // 1ª — Atrasadas (caixa vermelha).
-    const obox = cols.createDiv({ cls: "wd-todo-box wd-box-overdue" });
-    const ohd = obox.createDiv({ cls: "wd-todo-boxhd" });
-    ohd.createSpan({ cls: "wd-todo-boxwarn", text: "⚠" });
-    ohd.createSpan({ cls: "wd-todo-boxlabel", text: "Atrasadas" });
-    ohd.createSpan({ cls: "wd-todo-boxcount", text: String(overdue.length) });
-    const obody = obox.createDiv({ cls: "wd-todo-boxbody" });
-    if (overdue.length) for (const t of overdue) this.todoRow(obody, t);
-    else obody.createDiv({ cls: "wd-todo-boxempty", text: "Nenhuma. 👍" });
-
-    // 2ª — Hoje (caixa em destaque).
-    const tbox = cols.createDiv({ cls: "wd-todo-box wd-box-today" });
-    const thd = tbox.createDiv({ cls: "wd-todo-boxhd" });
-    thd.createSpan({ cls: "wd-todo-boxlabel", text: "Hoje" });
-    this.addTaskBtn(thd, "hoje", "Nova tarefa para hoje");
-    thd.createSpan({ cls: "wd-todo-boxcount", text: String(todayTasks.length) });
-    const tbody = tbox.createDiv({ cls: "wd-todo-boxbody" });
-    if (todayTasks.length) for (const t of todayTasks) this.todoRow(tbody, t);
-    else tbody.createDiv({ cls: "wd-todo-boxempty", text: "Nada para hoje." });
-
-    // 3ª — Próximos N dias (agrupado por dia, com sub-título só nos dias que têm tarefa).
-    let upcomingCount = 0;
-    const upDays: { dow: number; num: number; key: string; items: TodoistTask[] }[] = [];
-    for (let i = 1; i <= range; i++) {
-      const day = new Date();
-      day.setDate(day.getDate() + i);
-      const key = toKey(day);
-      const items = byDay[key];
-      if (!items?.length) continue;
-      upcomingCount += items.length;
-      upDays.push({ dow: (day.getDay() + 6) % 7, num: day.getDate(), key, items });
-    }
-    const ubox = cols.createDiv({ cls: "wd-todo-box wd-box-upcoming" });
-    const uhd = ubox.createDiv({ cls: "wd-todo-boxhd" });
-    uhd.createSpan({ cls: "wd-todo-boxlabel", text: `Próximos ${range} dias` });
-    this.addTaskBtn(uhd, undefined, "Nova tarefa");
-    uhd.createSpan({ cls: "wd-todo-boxcount", text: String(upcomingCount) });
-    const ubody = ubox.createDiv({ cls: "wd-todo-boxbody" });
-    if (upDays.length) {
-      for (const g of upDays) {
-        const dh = ubody.createDiv({ cls: "wd-todo-dayhd" + (g.dow >= 5 ? " wd-weekend" : "") });
-        dh.createSpan({ cls: "wd-todo-dayname", text: DAY_SHORT[g.dow] });
-        dh.createSpan({ cls: "wd-todo-daynum", text: String(g.num) });
-        this.addTaskBtn(dh, g.key, `Nova tarefa em ${g.num}`);
-        for (const t of g.items) this.todoRow(ubody, t, false);
-      }
-    } else {
-      ubody.createDiv({ cls: "wd-todo-boxempty", text: `Nada nos próximos ${range} dias.` });
-    }
-
-    // Depois (> N dias à frente; recolhível, abaixo da linha, fechado por padrão).
-    if (later.length) {
-      const panel = sec.createDiv({ cls: "wd-todo-later" });
-      const lhd = panel.createDiv({ cls: "wd-todo-ohd" });
-      lhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
-      lhd.createSpan({ cls: "wd-todo-otitle", text: `Depois (${later.length})` });
-      lhd.createSpan({ cls: "wd-todo-otoggle", text: this.todoistLaterOpen ? "ocultar ▾" : "mostrar ›" });
-      lhd.onclick = () => { this.todoistLaterOpen = !this.todoistLaterOpen; this.render(); };
-      if (this.todoistLaterOpen) {
-        const list = panel.createDiv({ cls: "wd-todo-olist" });
-        for (const t of later) this.todoRow(list, t);
-      }
-    }
-  }
-
-  // Janela de "próximos dias" saneada (3 ou 7).
-  private dayRange(): 3 | 7 {
-    return this.plugin.settings.todoistDayRange === 3 ? 3 : 7;
-  }
-
-  // Mantém só as tarefas que batem com os filtros ativos (projeto E etiqueta).
-  private applyTodoistFilters(tasks: TodoistTask[]): TodoistTask[] {
-    const f = this.plugin.settings.todoistFilters;
-    if (!f.projects.length && !f.labels.length) return tasks;
-    const ps = new Set(f.projects), ls = new Set(f.labels);
-    return tasks.filter(t => {
-      if (ps.size && !(t.project_id && ps.has(t.project_id))) return false;
-      if (ls.size && !(t.labels ?? []).some(l => ls.has(l))) return false;
-      return true;
-    });
-  }
-
-  private toggleTodoFilter(kind: "projects" | "labels", id: string) {
-    const arr = this.plugin.settings.todoistFilters[kind];
-    const i = arr.indexOf(id);
-    if (i >= 0) arr.splice(i, 1); else arr.push(id);
-  }
-
-  // Barra de filtros: chips de projeto e de etiqueta (toggle), + limpar.
-  private renderTodoFilterBar(sec: HTMLElement) {
-    const f = this.plugin.settings.todoistFilters;
-    const bar = sec.createDiv({ cls: "wd-todo-filterbar" });
-
-    if (this.todoistProjects.length) {
-      const grp = bar.createDiv({ cls: "wd-todo-fgroup" });
-      grp.createSpan({ cls: "wd-todo-flabel", text: "Projetos" });
-      for (const p of this.todoistProjects) {
-        const on = f.projects.includes(p.id);
-        const chip = grp.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: p.name });
-        chip.onclick = async () => { this.toggleTodoFilter("projects", p.id); await this.plugin.saveSettings(); this.render(); };
-      }
-    }
-
-    const labels = [...new Set(this.todoistTasks.flatMap(t => t.labels ?? []))].sort((a, b) => a.localeCompare(b));
-    if (labels.length) {
-      const grp = bar.createDiv({ cls: "wd-todo-fgroup" });
-      grp.createSpan({ cls: "wd-todo-flabel", text: "Etiquetas" });
-      for (const l of labels) {
-        const on = f.labels.includes(l);
-        const chip = this.labelChip(grp, l, "wd-todo-fchip" + (on ? " wd-on" : ""));
-        chip.onclick = async () => { this.toggleTodoFilter("labels", l); await this.plugin.saveSettings(); this.render(); };
-      }
-    }
-
-    if (f.projects.length || f.labels.length) {
-      const clr = bar.createSpan({ cls: "wd-todo-fclear", text: "limpar filtros" });
-      clr.onclick = async () => { f.projects = []; f.labels = []; await this.plugin.saveSettings(); this.render(); };
-    }
-  }
-
-  // Checkbox de conclusão (Fase 8.2) — conclui no Todoist real ao clicar.
-  private todoCheck(host: HTMLElement, t: TodoistTask) {
-    const check = host.createSpan({ cls: "wd-todo-check" });
-    check.setAttr("title", "Concluir tarefa");
-    check.onclick = e => { e.stopPropagation(); void this.completeTask(t); };
-  }
-
-  // Tooltip da tarefa: título completo + descrição (instruções), no hover.
-  private showTaskTip(target: HTMLElement, t: TodoistTask) {
-    this.hideTip();
-    const tip = document.body.createDiv({ cls: "wd-tooltip wd-task-tip" });
-    const head = tip.createDiv({ cls: "wd-task-tip-head" });
-    head.createSpan({ cls: "wd-task-tip-pri" }).style.background = priMeta(t.priority).color;
-    head.createSpan({ cls: "wd-task-tip-title", text: t.content });
-    if (hasDesc(t)) {
-      const d = t.description!.trim();
-      tip.createDiv({ cls: "wd-task-tip-desc", text: d.length > DESC_MAX ? d.slice(0, DESC_MAX) + "…" : d });
-    }
-    this.tip = tip;
-    this.positionTip(tip, target);
-  }
-
-  private attachTaskTip(el: HTMLElement, t: TodoistTask) {
-    el.addEventListener("mouseenter", () => this.showTaskTip(el, t));
-    el.addEventListener("mouseleave", () => this.hideTip());
-  }
-
-  // Linha de tarefa (usada nas 3 caixas: atrasadas, hoje, próximos e em "depois").
-  private todoRow(list: HTMLElement, t: TodoistTask, showDate = true) {
-    const pri = priMeta(t.priority);
-    const row = list.createDiv({ cls: "wd-todo-row" });
-    row.style.setProperty("--pri", pri.color);
-    this.todoCheck(row, t);
-    const tag = row.createSpan({ cls: "wd-todo-pri", text: pri.label });
-    tag.style.background = pri.color;
-    row.createSpan({ cls: "wd-todo-row-txt", text: t.content });
-    if (hasDesc(t)) setIcon(row.createSpan({ cls: "wd-todo-hasdesc" }), "align-left");
-    const proj = t.project_id ? this.todoistProjectMap.get(t.project_id) : undefined;
-    if (this.plugin.settings.todoistShowProject && proj) row.createSpan({ cls: "wd-todo-row-proj", text: proj });
-    if (this.plugin.settings.todoistShowLabels)
-      for (const l of t.labels ?? []) this.labelChip(row, l, "wd-todo-row-label");
-    const dk = dueKey(t);
-    if (showDate && dk) {
-      const [, m, d] = dk.split("-");
-      row.createSpan({ cls: "wd-todo-row-date", text: `${d}/${m}` });
-    }
-    if (t.due?.is_recurring) row.createSpan({ cls: "wd-todo-recur", text: "⟳" });
-    row.onclick = () => this.openTaskDetail(t);
-    this.attachTaskTip(row, t);
-  }
-
-  // Botão "+" de criar tarefa (header da seção, caixas e sub-títulos de dia).
-  private addTaskBtn(host: HTMLElement, prefillDue?: string, title = "Nova tarefa") {
-    const b = host.createSpan({ cls: "wd-todo-add" });
-    setIcon(b, "plus");
-    b.setAttr("title", title);
-    b.onclick = e => { e.stopPropagation(); this.openTaskForm({ mode: "create", prefillDue }); };
-    return b;
-  }
-
-  // Abre o formulário de tarefa (criar ou editar).
-  private openTaskForm(opts: { mode: "create" | "edit"; task?: TodoistTask; prefillDue?: string }) {
-    this.hideTip();
-    const labels = [...new Set([...this.todoistLabelColor.keys(), ...this.todoistTasks.flatMap(t => t.labels ?? [])])].sort((a, b) => a.localeCompare(b));
-    new TaskFormModal(this.app, {
-      mode: opts.mode,
-      task: opts.task,
-      prefillDue: opts.prefillDue,
-      projects: this.todoistProjects,
-      labels,
-      labelColor: n => this.labelColor(n),
-      submit: v => this.submitTaskForm(opts.mode, opts.task, v),
-      remove: opts.task ? () => this.deleteTask(opts.task!) : undefined,
-      complete: opts.task ? () => void this.completeTask(opts.task!) : undefined,
-    }).open();
-  }
-
-  // Abre o pop-up de detalhes (só leitura); o botão "Editar" abre o formulário.
-  private openTaskDetail(t: TodoistTask) {
-    this.hideTip();
-    new TaskDetailModal(this.app, this, {
-      task: t,
-      projectName: t.project_id ? this.todoistProjectMap.get(t.project_id) : undefined,
-      labelColor: n => this.labelColor(n),
-      edit: () => this.openTaskForm({ mode: "edit", task: t }),
-      complete: () => void this.completeTask(t),
-    }).open();
-  }
-
-  // Cria ou edita no Todoist real. No editar manda só os campos alterados (preserva
-  // recorrência se a data não mudou) e troca de projeto via /move. Retorna true se OK.
-  private async submitTaskForm(mode: "create" | "edit", task: TodoistTask | undefined, v: TaskFormValues): Promise<boolean> {
-    const token = this.plugin.settings.todoistToken.trim();
-    if (!token) return false;
-    try {
-      if (mode === "create") {
-        const fields: TodoistWrite = { content: v.content, priority: v.priority };
-        if (v.description.trim()) fields.description = v.description.trim();
-        if (v.dueDate) fields.due_date = v.dueDate;
-        if (v.projectId) fields.project_id = v.projectId;
-        if (v.labels.length) fields.labels = v.labels;
-        await createTodoistTask(token, fields);
-        new Notice(`✓ Criada: ${v.content}`);
-      } else if (task) {
-        const fields: TodoistWrite = {};
-        if (v.content !== task.content) fields.content = v.content;
-        if (v.description !== (task.description ?? "")) fields.description = v.description;
-        if (v.priority !== task.priority) fields.priority = v.priority;
-        const oldDate = task.due?.date ? task.due.date.substring(0, 10) : "";
-        if (v.dueDate !== oldDate) {
-          if (v.dueDate) fields.due_date = v.dueDate;
-          else fields.due_string = "no date";   // limpa a data
-        }
-        const oldL = (task.labels ?? []).slice().sort().join(" ");
-        const newL = v.labels.slice().sort().join(" ");
-        if (oldL !== newL) fields.labels = v.labels;
-        if (Object.keys(fields).length) await updateTodoistTask(token, task.id, fields);
-        const oldProj = task.project_id ?? "";
-        if (v.projectId !== oldProj && v.projectId) await moveTodoistTask(token, task.id, v.projectId);
-        new Notice(`✓ Salva: ${v.content}`);
-      }
-      await this.fetchTodoist(true);
-      return true;
-    } catch (e) {
-      new Notice(`Falha ao salvar: ${e instanceof Error ? e.message : String(e)}`);
-      return false;
-    }
-  }
-
-  // Exclui a tarefa (otimista) no Todoist real. Retorna true se OK.
-  private async deleteTask(t: TodoistTask): Promise<boolean> {
-    const token = this.plugin.settings.todoistToken.trim();
-    if (!token) return false;
-    const idx = this.todoistTasks.findIndex(x => x.id === t.id);
-    if (idx >= 0) this.todoistTasks.splice(idx, 1);
-    this.render();
-    try {
-      await deleteTodoistTask(token, t.id);
-      new Notice(`🗑 Excluída: ${t.content}`);
-      return true;
-    } catch (e) {
-      if (idx >= 0) this.todoistTasks.splice(idx, 0, t);   // reverte
-      new Notice(`Falha ao excluir: ${e instanceof Error ? e.message : String(e)}`);
-      this.render();
-      return false;
-    }
-  }
-
-  // Conclui a tarefa de forma otimista: remove da lista e re-renderiza; se a API
-  // falhar, restaura e avisa. A escrita reflete no Todoist real (Fase 8.2).
-  private async completeTask(t: TodoistTask) {
-    const token = this.plugin.settings.todoistToken.trim();
-    if (!token) return;
-    const idx = this.todoistTasks.findIndex(x => x.id === t.id);
-    if (idx >= 0) this.todoistTasks.splice(idx, 1);
-    this.render();
-    try {
-      await closeTodoistTask(token, t.id);
-      new Notice(`✓ Concluída: ${t.content}`);
-    } catch (e) {
-      if (idx >= 0) this.todoistTasks.splice(idx, 0, t);   // reverte
-      new Notice(`Falha ao concluir: ${e instanceof Error ? e.message : String(e)}`);
-      this.render();
-    }
-  }
-
-  // Busca tarefas; `manual` mostra o spinner imediatamente.
-  private async fetchTodoist(manual: boolean) {
-    const token = this.plugin.settings.todoistToken.trim();
-    if (!token || this.todoistLoading) return;
-    this.todoistLoading = true;
-    this.todoistError = null;
-    if (manual) this.render();
-    try {
-      // Projetos/etiquetas são auxiliares; se falharem, não derrubam as tarefas.
-      const [tasks, projects, labels] = await Promise.all([
-        fetchTodoistTasks(token),
-        fetchTodoistProjects(token).catch(() => [] as TodoistProject[]),
-        fetchTodoistLabels(token).catch(() => [] as TodoistLabel[]),
-      ]);
-      this.todoistTasks = tasks;
-      this.todoistProjects = projects;
-      this.todoistProjectMap = new Map(projects.map(p => [p.id, p.name]));
-      this.todoistLabelColor = new Map(labels.map(l => [l.name, TODOIST_COLORS[l.color] ?? LABEL_FALLBACK]));
-      this.todoistFetchedAt = Date.now();
-    } catch (e) {
-      this.todoistError = e instanceof Error ? e.message : String(e);
-    } finally {
-      this.todoistLoading = false;
-      this.render();
-    }
-  }
-
-  // Reseta o estado (ex.: token alterado nas configurações) e re-renderiza.
-  resetTodoist() {
-    this.todoistTasks = [];
-    this.todoistProjects = [];
-    this.todoistProjectMap = new Map();
-    this.todoistLabelColor = new Map();
-    this.todoistFetchedAt = 0;
-    this.todoistError = null;
-    this.todoistLoading = false;
-    this.render();
+    // Botão de navegação → abre a aba dedicada do Todoist (o dashboard é o hub).
+    const open = ctrls.createSpan({ cls: "wd-todo-openbtn" });
+    setIcon(open, "square-arrow-out-up-right");
+    open.setAttr("title", "Abrir a aba do Todoist");
+    open.onclick = e => { e.stopPropagation(); void this.plugin.openTodoist(); };
+    this.todo.renderList(sec, ctrls);
   }
 
   // ── Sincronização (Syncthing + conflitos) — v0.10.0 ───────────────────────
@@ -1942,19 +1998,6 @@ permissions:
     }
   }
 
-  // Cor (hex) de uma etiqueta pelo nome; cinza se desconhecida.
-  private labelColor(name: string): string {
-    return this.todoistLabelColor.get(name) ?? LABEL_FALLBACK;
-  }
-
-  // Cria um chip de etiqueta com bolinha colorida + "@nome".
-  private labelChip(host: HTMLElement, name: string, cls: string): HTMLElement {
-    const chip = host.createSpan({ cls });
-    chip.createSpan({ cls: "wd-label-dot" }).style.background = this.labelColor(name);
-    chip.createSpan({ text: `@${name}` });
-    return chip;
-  }
-
   // ── Header ──────────────────────────────────────────────────────────────────
 
   private renderHeader(root: HTMLElement) {
@@ -1973,20 +2016,31 @@ export default class WerusDashboard extends Plugin {
   async onload() {
     await this.loadSettings();
     this.registerView(VIEW_TYPE, leaf => new DashboardView(leaf, this));
+    this.registerView(TODOIST_VIEW_TYPE, leaf => new TodoistView(leaf, this));
     this.addRibbonIcon("layout-dashboard", "Abrir Werus Dashboard", () => this.open());
+    this.addRibbonIcon("list-checks", "Abrir Todoist (Werus)", () => this.openTodoist());
     this.addCommand({ id: "open-dashboard", name: "Abrir Dashboard", callback: () => this.open() });
+    this.addCommand({ id: "open-todoist", name: "Abrir Todoist", callback: () => this.openTodoist() });
     this.addSettingTab(new WerusSettingTab(this.app, this));
   }
 
-  // Re-busca o Todoist em todas as dashboards abertas (ex.: após mudar o token).
-  refreshDashboards() {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
-      const v = leaf.view;
-      if (v instanceof DashboardView) v.resetTodoist();
-    }
+  // Todas as views (dashboard + aba Todoist) abertas, que têm controlador Todoist.
+  private todoViews(): (DashboardView | TodoistView)[] {
+    const out: (DashboardView | TodoistView)[] = [];
+    for (const t of [VIEW_TYPE, TODOIST_VIEW_TYPE])
+      for (const leaf of this.app.workspace.getLeavesOfType(t)) {
+        const v = leaf.view;
+        if (v instanceof DashboardView || v instanceof TodoistView) out.push(v);
+      }
+    return out;
   }
 
-  // Reseta o estado do Syncthing em todas as dashboards (ex.: token/URL alterados).
+  // Re-busca o Todoist em todas as views abertas (ex.: após mudar o token).
+  refreshDashboards() {
+    for (const v of this.todoViews()) v.todo.reset();
+  }
+
+  // Reseta o estado do Syncthing nas dashboards (ex.: token/URL alterados).
   refreshSync() {
     for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
       const v = leaf.view;
@@ -1994,13 +2048,10 @@ export default class WerusDashboard extends Plugin {
     }
   }
 
-  // Re-renderiza todas as dashboards abertas (após mudar config na aba de
-  // Configurações: ordem das seções, ocultar/mostrar, fontes da Semana).
+  // Re-renderiza todas as views abertas (após mudar config na aba de
+  // Configurações: ordem das seções, ocultar/mostrar, fontes, pacotes).
   rerenderDashboards() {
-    for (const leaf of this.app.workspace.getLeavesOfType(VIEW_TYPE)) {
-      const v = leaf.view;
-      if (v instanceof DashboardView) v.refresh();
-    }
+    for (const v of this.todoViews()) v.refresh();
   }
 
   // Mostra/oculta uma seção ("sec:<id>") ou pasta (caminho) por chave em `hidden`.
@@ -2058,6 +2109,18 @@ export default class WerusDashboard extends Plugin {
     if (typeof this.settings.syncthingApiKey !== "string") this.settings.syncthingApiKey = "";
     if (typeof this.settings.syncthingFolderId !== "string") this.settings.syncthingFolderId = "";
     this.settings.syncthingShowCounts = this.settings.syncthingShowCounts === true;
+    // Pacotes de tarefas (v0.12.0).
+    const tp = this.settings.taskPackages;
+    this.settings.taskPackages = Array.isArray(tp)
+      ? tp.filter(p => p && typeof p.id === "string").map(p => ({
+          id: p.id,
+          name: typeof p.name === "string" ? p.name : "",
+          icon: typeof p.icon === "string" && p.icon.trim() ? p.icon : undefined,
+          tasks: Array.isArray(p.tasks) ? p.tasks.filter(x => typeof x === "string") : [],
+          projectId: typeof p.projectId === "string" && p.projectId ? p.projectId : undefined,
+          labels: Array.isArray(p.labels) ? p.labels.filter(x => typeof x === "string") : undefined,
+        }))
+      : [];
   }
 
   async saveSettings() { await this.saveData(this.settings); }
@@ -2069,7 +2132,78 @@ export default class WerusDashboard extends Plugin {
     workspace.revealLeaf(leaf);
   }
 
+  async openTodoist() {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(TODOIST_VIEW_TYPE)[0];
+    if (!leaf) { leaf = workspace.getLeaf(false); await leaf.setViewState({ type: TODOIST_VIEW_TYPE, active: true }); }
+    workspace.revealLeaf(leaf);
+  }
+
   onunload() {}
+}
+
+// ── Aba dedicada do Todoist ──────────────────────────────────────────────────
+// Hub do Todoist na área central (não é sidebar): lançador de pacotes + a mesma
+// lista de tarefas do dashboard (via TodoistController compartilhado).
+class TodoistView extends ItemView {
+  readonly todo: TodoistController;
+
+  constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) {
+    super(leaf);
+    this.todo = new TodoistController(this.app, this.plugin, this, () => this.refresh());
+  }
+
+  getViewType()    { return TODOIST_VIEW_TYPE; }
+  getDisplayText() { return "Todoist"; }
+  getIcon()        { return "list-checks"; }
+
+  async onOpen() { this.refresh(); }
+  async onClose() { this.todo.hideTip(); }
+
+  refresh() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("wd-root", "wd-todoist-view");
+
+    const h = root.createDiv({ cls: "wd-header" });
+    const txt = h.createDiv({ cls: "wd-header-text" });
+    txt.createDiv({ cls: "wd-date", text: todayBR() });
+    txt.createDiv({ cls: "wd-title", text: "Todoist" });
+
+    this.renderPackages(root);
+
+    const sec = root.createDiv({ cls: "wd-section wd-todo-section" });
+    const head = sec.createDiv({ cls: "wd-sec-head" });
+    head.createDiv({ cls: "wd-sec-label", text: "TAREFAS" });
+    const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
+    this.todo.renderList(sec, ctrls);
+  }
+
+  // Barra de lançadores: um botão por pacote → cria as tarefas no Todoist (hoje).
+  private renderPackages(root: HTMLElement) {
+    const pkgs = this.plugin.settings.taskPackages;
+    const sec = root.createDiv({ cls: "wd-section" });
+    const head = sec.createDiv({ cls: "wd-sec-head" });
+    head.createDiv({ cls: "wd-sec-label", text: "PACOTES" });
+
+    if (!pkgs.length) {
+      sec.createDiv({ cls: "wd-empty", text: "Crie pacotes em Configurações → Werus Dashboard → Pacotes de tarefas." });
+      return;
+    }
+
+    const token = this.plugin.settings.todoistToken.trim();
+    const bar = sec.createDiv({ cls: "wd-pkg-bar" });
+    for (const pkg of pkgs) {
+      const valid = pkg.tasks.filter(s => s.trim()).length;
+      const disabled = !token || !valid;
+      const btn = bar.createDiv({ cls: "wd-pkg-btn" + (disabled ? " wd-pkg-disabled" : "") });
+      if (pkg.icon) renderIcon(btn.createSpan({ cls: "wd-pkg-ico" }), pkg.icon);
+      btn.createSpan({ cls: "wd-pkg-name", text: pkg.name || "(sem nome)" });
+      btn.createSpan({ cls: "wd-pkg-count", text: String(valid) });
+      btn.setAttr("title", !token ? "Configure o token do Todoist" : !valid ? "Pacote sem tarefas" : `Lançar ${valid} tarefa(s) no Todoist (hoje)`);
+      if (!disabled) btn.onclick = () => void this.todo.launchPackage(pkg);
+    }
+  }
 }
 
 // ── Pop-up de detalhes da tarefa (só leitura; botão Editar abre o formulário) ─
@@ -2306,6 +2440,10 @@ class TaskFormModal extends Modal {
 // ── Aba de configurações ────────────────────────────────────────────────────
 
 class WerusSettingTab extends PluginSettingTab {
+  // Projetos do Todoist (para os dropdowns dos pacotes). Buscados 1x; quando
+  // chegam, re-renderiza a aba para preencher os selects.
+  private projects: TodoistProject[] | null = null;
+
   constructor(app: App, private plugin: WerusDashboard) { super(app, plugin); }
 
   display() {
@@ -2367,11 +2505,11 @@ class WerusSettingTab extends PluginSettingTab {
           .onChange(async v => { await plugin.setHidden(f.path, !v); }));
     }
 
-    // ── Fontes da Semana ─────────────────────────────────────────────────────
-    containerEl.createEl("h3", { text: "Fontes da Semana" });
+    // ── Fontes da seção Relatórios ───────────────────────────────────────────
+    containerEl.createEl("h3", { text: "Fontes dos Relatórios" });
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: "Pastas cujas notas viram cards nos dias da Semana (posição pela data da nota). Cada fonte tem uma cor própria.",
+      text: "Pastas cujas notas viram cards nos dias da seção Relatórios (posição pela data da nota). Cada fonte tem uma cor própria.",
     });
 
     const srcs = plugin.settings.calendarSources;
@@ -2400,7 +2538,7 @@ class WerusSettingTab extends PluginSettingTab {
     if (available.length) {
       new Setting(containerEl)
         .setName("Adicionar fonte")
-        .setDesc("Escolha uma pasta do cofre para alimentar a Semana.")
+        .setDesc("Escolha uma pasta do cofre para alimentar a seção Relatórios.")
         .addDropdown(d => {
           d.addOption("", "Escolha uma pasta…");
           for (const p of available) d.addOption(p, p);
@@ -2414,6 +2552,66 @@ class WerusSettingTab extends PluginSettingTab {
           });
         });
     }
+
+    // ── Pacotes de tarefas ───────────────────────────────────────────────────
+    containerEl.createEl("h3", { text: "Pacotes de tarefas" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Conjuntos de tarefas que você lança no Todoist com um clique (na aba Todoist), todas com data de hoje. Uma tarefa por linha.",
+    });
+
+    const token = plugin.settings.todoistToken.trim();
+    // Busca os projetos uma vez (para os dropdowns); ao chegar, re-renderiza.
+    if (token && this.projects === null) {
+      fetchTodoistProjects(token).then(ps => { this.projects = ps; this.display(); }).catch(() => { this.projects = []; });
+    }
+
+    for (const pkg of plugin.settings.taskPackages) {
+      const s = new Setting(containerEl).setClass("wd-pkg-setting");
+      s.addText(t => t
+        .setPlaceholder("Nome do pacote")
+        .setValue(pkg.name)
+        .onChange(async v => { pkg.name = v; await plugin.saveSettings(); plugin.rerenderDashboards(); }));
+      s.addText(t => {
+        t.setPlaceholder("ícone (lucide/emoji)")
+          .setValue(pkg.icon ?? "")
+          .onChange(async v => { pkg.icon = v.trim() || undefined; await plugin.saveSettings(); plugin.rerenderDashboards(); });
+        t.inputEl.style.width = "9em";
+      });
+      s.addDropdown(d => {
+        d.addOption("", "Entrada (Inbox)");
+        for (const p of (this.projects ?? [])) d.addOption(p.id, p.name);
+        d.setValue(pkg.projectId ?? "");
+        d.onChange(async v => { pkg.projectId = v || undefined; await plugin.saveSettings(); });
+      });
+      s.addExtraButton(b => b
+        .setIcon("trash-2").setTooltip("Remover pacote")
+        .onClick(async () => {
+          plugin.settings.taskPackages = plugin.settings.taskPackages.filter(x => x !== pkg);
+          await plugin.saveSettings();
+          plugin.rerenderDashboards();
+          this.display();
+        }));
+      const ta = containerEl.createEl("textarea", { cls: "wd-pkg-tasks" });
+      ta.value = pkg.tasks.join("\n");
+      ta.placeholder = "Uma tarefa por linha (ex.: Beber água)";
+      ta.rows = 4;
+      ta.addEventListener("change", async () => {
+        pkg.tasks = ta.value.split("\n").map(s => s.trim()).filter(Boolean);
+        await plugin.saveSettings();
+        plugin.rerenderDashboards();
+      });
+    }
+
+    new Setting(containerEl)
+      .setName("Adicionar pacote")
+      .addButton(b => b
+        .setButtonText("+ Novo pacote")
+        .onClick(async () => {
+          plugin.settings.taskPackages.push({ id: uid(), name: "Novo pacote", tasks: [] });
+          await plugin.saveSettings();
+          this.display();
+        }));
 
     containerEl.createEl("h3", { text: "Integração Todoist" });
 

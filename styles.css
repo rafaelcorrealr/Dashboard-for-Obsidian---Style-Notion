@@ -977,6 +977,17 @@ body {
 }
 .wd-todo-refresh:hover { color: var(--wd-accent); }
 .wd-todo-refresh svg { width: 14px; height: 14px; }
+
+/* Botão "abrir a aba do Todoist" (só no dashboard) */
+.wd-todo-openbtn {
+  display: inline-flex;
+  align-items: center;
+  color: var(--wd-text-faint);
+  cursor: pointer;
+  transition: color 0.15s;
+}
+.wd-todo-openbtn:hover { color: var(--wd-accent); }
+.wd-todo-openbtn svg { width: 14px; height: 14px; }
 .wd-spin svg { animation: wd-spin 0.8s linear infinite; }
 @keyframes wd-spin { to { transform: rotate(360deg); } }
 
@@ -1703,3 +1714,54 @@ body {
 .wd-sync-cdel svg { width: 14px; height: 14px; }
 .wd-sync-cyes { font-size: 11px; color: #fff; background: #EF4444; border-radius: 5px; padding: 2px 8px; cursor: pointer; flex-shrink: 0; }
 .wd-sync-cno { font-size: 11px; color: var(--wd-text-muted); cursor: pointer; flex-shrink: 0; }
+
+/* ── Aba dedicada do Todoist (v0.12.0) ─────────────────────────────────────── */
+/* Centraliza o conteúdo numa coluna confortável na aba (a área central é larga). */
+.wd-todoist-view .wd-section { max-width: 1100px; margin-left: auto; margin-right: auto; }
+.wd-todoist-view .wd-header { max-width: 1100px; margin-left: auto; margin-right: auto; }
+
+/* Lançador de pacotes */
+.wd-pkg-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wd-pkg-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 13px;
+  border-radius: 9px;
+  border: 1px solid var(--wd-border);
+  background: var(--wd-surface);
+  color: var(--wd-text);
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  transition: border-color 0.15s, background 0.15s, transform 0.05s;
+}
+.wd-pkg-btn:hover { border-color: var(--wd-accent); background: var(--wd-fill); }
+.wd-pkg-btn:active { transform: translateY(1px); }
+.wd-pkg-ico { display: inline-flex; align-items: center; color: var(--wd-accent); }
+.wd-pkg-ico svg { width: 16px; height: 16px; }
+.wd-pkg-count {
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--wd-text-faint);
+  background: var(--wd-bg);
+  border-radius: 999px;
+  padding: 1px 7px;
+}
+.wd-pkg-disabled { opacity: 0.45; cursor: default; }
+.wd-pkg-disabled:hover { border-color: var(--wd-border); background: var(--wd-surface); }
+
+/* Configurações: editor de tarefas de um pacote */
+.wd-pkg-setting { border-top: 1px solid var(--wd-border); padding-top: 12px; }
+.wd-pkg-tasks {
+  width: 100%;
+  box-sizing: border-box;
+  margin: 0 0 14px;
+  font-family: var(--font-monospace, monospace);
+  font-size: 12px;
+  resize: vertical;
+}

@@ -41,7 +41,7 @@ não tem mais setas ▲▼ nem botões de ocultar durante o uso).
 | SINCRONIZAÇÃO | `sync` | Saúde do Syncthing (pasta + aparelhos) via API + lista de conflitos |
 | ATIVIDADE DO COFRE | `heatmap` | Heatmap de notas criadas/dia via plugin Heatmap Calendar |
 | CRESCIMENTO DO COFRE | `growth` | Notas criadas/dia nos últimos 30 dias; modo cumulativo disponível |
-| Semana N | `calendar` | Calendário semanal com notas das **fontes** configuradas (cards por dia) |
+| Relatórios | `calendar` | Calendário semanal com notas das **fontes** configuradas (cards por dia) |
 
 ### Configurações (administração da aparência)
 
@@ -50,10 +50,13 @@ Toda a configuração de exibição fica em **Configurações → Werus Dashboar
 - **Exibição do dashboard:** modo **compacto** (layout mais denso).
 - **Seções do dashboard:** mostrar/ocultar e **reordenar** (▲▼) cada seção.
 - **Pastas exibidas (cards do Cofre):** mostrar/ocultar cada pasta de topo.
-- **Fontes da Semana:** ativar/desativar, escolher a **cor** e **remover** cada fonte; **adicionar** qualquer pasta do cofre. As notas das fontes ativas aparecem como cards nos dias da Semana (posição pela data da nota).
+- **Fontes dos Relatórios:** ativar/desativar, escolher a **cor** e **remover** cada fonte; **adicionar** qualquer pasta do cofre. As notas das fontes ativas aparecem como cards nos dias da seção Relatórios (posição pela data da nota).
+- **Pacotes de tarefas:** criar/editar/remover pacotes (lançados na aba do Todoist).
 - Além disso: token do **Todoist** + exibição das tarefas, e a **Sincronização** (Syncthing).
 
 ### Integração Todoist
+- **Aba dedicada do Todoist** (área central — abre pelo ícone `list-checks` na ribbon, pelo comando **"Abrir Todoist"**, ou pelo botão `↗` no cabeçalho da seção TAREFAS do dashboard): hub com os **pacotes** no topo + a mesma lista de tarefas do dashboard. A seção TAREFAS do dashboard continua existindo; ambas compartilham o mesmo `TodoistController`.
+- **Pacotes de tarefas:** conjuntos nomeados de tarefas que você **lança no Todoist num clique** (todas com data de hoje). Configure em **Configurações → Pacotes de tarefas** (nome, ícone opcional, projeto padrão e as tarefas — uma por linha); lance na aba do Todoist.
 - **3 caixas lado a lado por urgência:** **Atrasadas** (vermelha) · **Hoje** (destaque) · **Próximos N dias** (lista agrupada por dia, com sub-título por dia). Tarefas além da janela ficam em **"Depois"** (recolhível, abaixo). Cada linha tem **prioridade colorida** (🔴 p1 / 🟠 p2 / 🔵 p3 / cinza p4)
 - **Toggle 3 / 7 dias** e **filtros por projeto/etiqueta** (chips) no header da seção
 - **Criar tarefa:** botão **"+"** (com brilho vermelho) no header, na caixa Hoje e em cada dia (já preenche a data daquele dia)
@@ -127,8 +130,8 @@ Acende o ícone de aviso no card da pasta (cor pelo nível). Ausente → sem avi
 ### Imagem de capa (fallback)
 Se o `status.md` não tiver `cover:`, o plugin procura um arquivo chamado `_cover` (qualquer extensão de imagem: `.png`, `.jpg`, `.webp`, `.gif`, `.svg`) na pasta. Se também não houver `_cover`, os cards do topo (PARA) recebem uma capa padrão: gradiente da cor de acento com o ícone da pasta como marca d'água.
 
-### Fontes da Semana
-As notas das pastas marcadas como **fonte** (Configurações → Fontes da Semana) aparecem como cards nos dias da Semana, cada fonte com sua cor. Padrão: `40.Archive/Relatórios Claude` e `50.Diário`. A posição vem do `date: YYYY-MM-DD` do frontmatter (ou da data no nome do arquivo).
+### Fontes dos Relatórios
+As notas das pastas marcadas como **fonte** (Configurações → Fontes dos Relatórios) aparecem como cards nos dias da seção **Relatórios**, cada fonte com sua cor. Padrão: `40.Archive/Relatórios Claude` e `50.Diário`. A posição vem do `date: YYYY-MM-DD` do frontmatter (ou da data no nome do arquivo).
 
 ### Calendário e notas diárias
 Notas com frontmatter `date: YYYY-MM-DD` aparecem como pílulas no dia correspondente do calendário semanal.
