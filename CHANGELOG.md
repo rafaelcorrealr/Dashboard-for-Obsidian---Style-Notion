@@ -13,7 +13,7 @@
 - **Saiu da view** (durante o uso): os botões de **ocultar** (👁 eye-off) das seções e dos cards de pasta, a barra **"ocultos:"**, as setas **▲▼** de reordenar seção, o botão **⚙ (folder-cog)** de fontes da Semana e o toggle **compacto/confortável** do cabeçalho.
 - **Entrou nas Configurações** três grupos novos:
   - **Exibição do dashboard:** toggle **Modo compacto**.
-  - **Seções do dashboard:** por seção, **mostrar/ocultar** + **reordenar** (▲▼). A ordem da lista reflete a ordem na dashboard.
+  - **Seções do dashboard:** por seção, **mostrar/ocultar** + **reordenar** (▲▼). A ordem da lista reflete a ordem na dashboard. Agora **todas** as seções são ocultáveis — inclusive o **Cofre** (`para`), que antes só podia ser reordenado (gate `SEC_PARA` adicionado no `renderPara`).
   - **Pastas exibidas (cards do Cofre):** toggle de visibilidade por pasta de topo.
   - **Fontes da Semana:** por fonte, **ativar/desativar**, **cor** (color picker nativo) e **remover**; dropdown para **adicionar** qualquer pasta do cofre.
 - **Atualização ao vivo:** mudar qualquer opção re-renderiza as dashboards abertas na hora (`rerenderDashboards`).
