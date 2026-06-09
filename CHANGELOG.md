@@ -6,6 +6,13 @@
 
 ---
 
+## [0.12.1] — alpha — 2026-06-08
+
+**Separação dashboard × aba do Todoist** (mesmo código, comportamentos diferentes).
+
+- **"Depois" só na aba do Todoist:** o dashboard mostra apenas **Atrasadas · Hoje · Próximos 7 dias** (o essencial). Tarefas além disso (inclusive recorrentes com a próxima ocorrência distante) só aparecem na aba — assim a recorrente **só entra no dashboard quando o dia está chegando**. (`renderList(..., { showLater })`.)
+- **Ordenação do "Depois":** agora por **data** (mais próxima primeiro) e, no mesmo dia, por **prioridade** — antes era só por prioridade.
+
 ## [0.12.0] — alpha — 2026-06-08
 
 **Aba dedicada do Todoist + Pacotes de tarefas.** Primeira fase do "turbinar antes de Finanças".

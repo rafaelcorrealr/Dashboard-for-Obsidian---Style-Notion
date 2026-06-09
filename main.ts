@@ -942,7 +942,7 @@ class TodoistController {
 
   // Renderiza os controles de cabeçalho (em `ctrls`) + a lista de tarefas
   // (em `body`). O host fornece o rótulo da seção e o layout do cabeçalho.
-  renderList(body: HTMLElement, ctrls: HTMLElement) {
+  renderList(body: HTMLElement, ctrls: HTMLElement, opts: { showLater?: boolean } = {}) {
     const token = this.plugin.settings.todoistToken.trim();
     if (token) {
       const range = this.dayRange();
@@ -1002,7 +1002,13 @@ class TodoistController {
       else later.push(t);
     }
     const byPri = (a: TodoistTask, b: TodoistTask) => b.priority - a.priority;
-    overdue.sort(byPri); todayTasks.sort(byPri); later.sort(byPri);
+    // "Depois": ordena por DATA (mais próxima primeiro) e, no mesmo dia, por prioridade.
+    const byDateThenPri = (a: TodoistTask, b: TodoistTask) => {
+      const da = dueKey(a) ?? "", db = dueKey(b) ?? "";
+      if (da !== db) return da < db ? -1 : 1;
+      return b.priority - a.priority;
+    };
+    overdue.sort(byPri); todayTasks.sort(byPri); later.sort(byDateThenPri);
     for (const k of Object.keys(byDay)) byDay[k].sort(byPri);
 
     const visible = overdue.length + todayTasks.length + later.length + Object.values(byDay).reduce((s, a) => s + a.length, 0);
@@ -1061,7 +1067,7 @@ class TodoistController {
       ubody.createDiv({ cls: "wd-todo-boxempty", text: `Nada nos próximos ${range} dias.` });
     }
 
-    if (later.length) {
+    if (later.length && opts.showLater !== false) {
       const panel = body.createDiv({ cls: "wd-todo-later" });
       const lhd = panel.createDiv({ cls: "wd-todo-ohd" });
       lhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
@@ -1844,7 +1850,9 @@ permissions:
     setIcon(open, "square-arrow-out-up-right");
     open.setAttr("title", "Abrir a aba do Todoist");
     open.onclick = e => { e.stopPropagation(); void this.plugin.openTodoist(); };
-    this.todo.renderList(sec, ctrls);
+    // Dashboard = só o essencial (Atrasadas · Hoje · Próximos 7). "Depois" fica
+    // só na aba do Todoist → recorrentes só aparecem aqui perto do dia.
+    this.todo.renderList(sec, ctrls, { showLater: false });
   }
 
   // ── Sincronização (Syncthing + conflitos) — v0.10.0 ───────────────────────
