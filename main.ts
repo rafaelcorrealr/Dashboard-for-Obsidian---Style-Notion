@@ -539,66 +539,11 @@ function fmtShort(ts: number): string {
 
 // ── Utilidades de pasta ─────────────────────────────────────────────────────
 
-// Conta notas revisadas (reviewed: true) vs total em toda a subárvore.
-function reviewedStats(app: App, folder: TFolder): { reviewed: number; total: number } {
-  let reviewed = 0, total = 0;
-  const walk = (f: TFolder) => {
-    for (const c of f.children) {
-      if (c instanceof TFile && c.extension === "md" && c.name !== "status.md") {
-        total++;
-        if (app.metadataCache.getCache(c.path)?.frontmatter?.reviewed === true) reviewed++;
-      } else if (c instanceof TFolder) walk(c);
-    }
-  };
-  walk(folder);
-  return { reviewed, total };
-}
-
-// Conta md (exceto status.md) e imagens em toda a subárvore.
-function folderStats(folder: TFolder): { md: number; img: number } {
-  let md = 0, img = 0;
-  const walk = (f: TFolder) => {
-    for (const c of f.children) {
-      if (c instanceof TFile) {
-        if (c.extension === "md" && c.name !== "status.md") md++;
-        else if (IMG_EXT.includes(c.extension)) img++;
-      } else if (c instanceof TFolder) walk(c);
-    }
-  };
-  walk(folder);
-  return { md, img };
-}
-
 // Texto de contagem padronizado para os cards (notas + imagens, quando houver).
+// (md/img da subárvore vêm do cache do cofre — ver buildVaultCache.)
 function countText(stats: { md: number; img: number }): string {
   if (stats.md === 0 && stats.img > 0) return `${stats.img} img`;
   return stats.img > 0 ? `${stats.md} notas · ${stats.img} img` : `${stats.md} notas`;
-}
-
-// As N notas .md modificadas mais recentemente em toda a subárvore.
-function recentNotes(folder: TFolder, n: number): TFile[] {
-  const files: TFile[] = [];
-  const walk = (f: TFolder) => {
-    for (const c of f.children) {
-      if (c instanceof TFile && c.extension === "md" && c.name !== "status.md") files.push(c);
-      else if (c instanceof TFolder) walk(c);
-    }
-  };
-  walk(folder);
-  files.sort((a, b) => b.stat.mtime - a.stat.mtime);
-  return files.slice(0, n);
-}
-
-// Pasta "de assets": só tem imagens, nenhuma nota → escondida no navegador interno.
-function isAssetFolder(folder: TFolder): boolean {
-  const { md, img } = folderStats(folder);
-  return img > 0 && md === 0;
-}
-
-function subFolders(folder: TFolder): TFolder[] {
-  return (folder.children.filter(c => c instanceof TFolder) as TFolder[])
-    .filter(f => !isAssetFolder(f))
-    .sort((a, b) => a.name.localeCompare(b.name, "pt"));
 }
 
 function coverInFolder(app: App, folder: TFolder): string | null {
@@ -642,25 +587,8 @@ function readNoteUrgency(app: App, file: TFile): Urgency | null {
   return u === "alta" || u === "media" || u === "baixa" ? u : null;
 }
 
+// Agregado de urgência de uma subárvore (vem do cache do cofre — ver buildVaultCache).
 type UrgencyInfo = { items: { file: TFile; level: Urgency }[]; max: Urgency | null };
-
-// Notas com `urgency` em toda a subárvore + o nível máximo (ordenadas por nível desc).
-function urgencyStats(app: App, folder: TFolder): UrgencyInfo {
-  const items: { file: TFile; level: Urgency }[] = [];
-  const walk = (f: TFolder) => {
-    for (const c of f.children) {
-      if (c instanceof TFile && c.extension === "md" && c.name !== "status.md") {
-        const u = readNoteUrgency(app, c);
-        if (u) items.push({ file: c, level: u });
-      } else if (c instanceof TFolder) walk(c);
-    }
-  };
-  walk(folder);
-  let max: Urgency | null = null;
-  for (const it of items) if (!max || URGENCY_RANK[it.level] > URGENCY_RANK[max]) max = it.level;
-  items.sort((a, b) => URGENCY_RANK[b.level] - URGENCY_RANK[a.level]);
-  return { items, max };
-}
 
 // ── Arquivos exibíveis: nota (.md) / canvas (.canvas) / base (.base) ──────────
 const FILE_EXTS = ["md", "canvas", "base"];
@@ -713,6 +641,73 @@ function revealInExplorer(app: App, target: unknown) {
     internalPlugins: { getPluginById(id: string): ExpPlugin | null };
   }).internalPlugins.getPluginById("file-explorer");
   if (exp && target) exp.instance.revealInFolder(target);
+}
+
+// ── Cache do cofre (§3) ───────────────────────────────────────────────────────
+// UMA passada (DFS) monta os agregados por pasta (subárvore) + os globais que
+// todas as seções consomem — antes cada seção varria o cofre por conta própria
+// (~8–10× por render). Invalidado nos eventos do vault e recriado sob demanda.
+interface FolderAgg {
+  md: number;          // notas .md (exceto status.md) na subárvore
+  img: number;         // imagens na subárvore
+  reviewed: number;    // .md com reviewed:true na subárvore
+  urgency: { file: TFile; level: Urgency }[];   // notas com urgency (ordenadas por nível desc)
+  urgencyMax: Urgency | null;
+  recent: TFile[];     // até 4 notas .md mais recentes (mtime) da subárvore
+}
+interface VaultCache {
+  byFolder: Map<string, FolderAgg>;              // path da pasta → agregados
+  datedNotes: { file: TFile; date: string }[];   // notas com data (frontmatter date: ou nome AAAA-MM-DD)
+  ctimeByDay: Map<string, number>;               // AAAA-MM-DD → nº de notas criadas (ctime)
+  totalNotes: number;
+  totalReviewed: number;
+}
+const EMPTY_AGG: FolderAgg = { md: 0, img: 0, reviewed: 0, urgency: [], urgencyMax: null, recent: [] };
+
+function buildVaultCache(app: App): VaultCache {
+  const byFolder = new Map<string, FolderAgg>();
+  const datedNotes: { file: TFile; date: string }[] = [];
+  const ctimeByDay = new Map<string, number>();
+  let totalNotes = 0, totalReviewed = 0;
+
+  const walk = (folder: TFolder): FolderAgg => {
+    const agg: FolderAgg = { md: 0, img: 0, reviewed: 0, urgency: [], urgencyMax: null, recent: [] };
+    const recent: TFile[] = [];   // candidatos: arquivos próprios + top-4 de cada filho
+    for (const c of folder.children) {
+      if (c instanceof TFolder) {
+        const sub = walk(c);
+        agg.md += sub.md; agg.img += sub.img; agg.reviewed += sub.reviewed;
+        if (sub.urgency.length) agg.urgency.push(...sub.urgency);
+        if (sub.recent.length) recent.push(...sub.recent);
+      } else if (c instanceof TFile) {
+        if (c.extension === "md" && c.name !== "status.md") {
+          agg.md++;
+          recent.push(c);
+          totalNotes++;
+          const fm = app.metadataCache.getCache(c.path)?.frontmatter;
+          if (fm?.reviewed === true) { agg.reviewed++; totalReviewed++; }
+          const u = fm?.urgency;
+          if (u === "alta" || u === "media" || u === "baixa") agg.urgency.push({ file: c, level: u });
+          const ck = toKey(new Date(c.stat.ctime));
+          ctimeByDay.set(ck, (ctimeByDay.get(ck) ?? 0) + 1);
+          const m = c.basename.match(/^(\d{4}-\d{2}-\d{2})/);
+          const d = normalizeDate(fm?.date) ?? (m ? m[1] : null);
+          if (d) datedNotes.push({ file: c, date: d });
+        } else if (IMG_EXT.includes(c.extension)) {
+          agg.img++;
+        }
+      }
+    }
+    recent.sort((a, b) => b.stat.mtime - a.stat.mtime);
+    agg.recent = recent.slice(0, 4);
+    for (const it of agg.urgency)
+      if (!agg.urgencyMax || URGENCY_RANK[it.level] > URGENCY_RANK[agg.urgencyMax]) agg.urgencyMax = it.level;
+    agg.urgency.sort((a, b) => URGENCY_RANK[b.level] - URGENCY_RANK[a.level]);
+    byFolder.set(folder.path, agg);
+    return agg;
+  };
+  walk(app.vault.getRoot());
+  return { byFolder, datedNotes, ctimeByDay, totalNotes, totalReviewed };
 }
 
 // ── View ──────────────────────────────────────────────────────────────────────
@@ -1273,7 +1268,7 @@ class DashboardView extends ItemView {
     // Inscreve no controller único: mudança de estado re-renderiza só a seção Tarefas.
     this.unsubTodo = this.plugin.todo.subscribe(() => this.renderSection("todoist"));
     for (const ev of ["modify", "create", "delete", "rename"] as const)
-      this.registerEvent(this.app.vault.on(ev as "modify", () => this.schedule()));
+      this.registerEvent(this.app.vault.on(ev as "modify", () => { this.plugin.invalidateVaultCache(); this.schedule(); }));
   }
 
   async onClose() {
@@ -1397,11 +1392,18 @@ class DashboardView extends ItemView {
     if (this.tip) { this.tip.remove(); this.tip = null; }
   }
 
-  private attachTip(card: HTMLElement, folder: TFolder) {
-    const recents = recentNotes(folder, 4);
+  private attachTip(card: HTMLElement, recents: TFile[]) {
     if (!recents.length) return;
     card.addEventListener("mouseenter", () => this.showTip(card, recents));
     card.addEventListener("mouseleave", () => this.hideTip());
+  }
+
+  // Subpastas exibíveis (ignora pastas só-de-imagens), via cache do cofre.
+  private subFoldersOf(folder: TFolder): TFolder[] {
+    const cache = this.plugin.getVaultCache();
+    return (folder.children.filter(c => c instanceof TFolder) as TFolder[])
+      .filter(f => { const a = cache.byFolder.get(f.path); return !(a && a.img > 0 && a.md === 0); })
+      .sort((a, b) => a.name.localeCompare(b.name, "pt"));
   }
 
   // ── Calendário ──────────────────────────────────────────────────────────
@@ -1426,13 +1428,12 @@ class DashboardView extends ItemView {
       return best ? best.color : null;
     };
 
+    // As notas com data já vêm do cache (uma passada); aqui só filtra por fonte.
     const byDay: Record<string, { name: string; file: TFile; color: string }[]> = {};
-    for (const file of this.app.vault.getMarkdownFiles()) {
+    for (const { file, date } of this.plugin.getVaultCache().datedNotes) {
       const color = colorFor(file.path);
       if (!color) continue;   // só notas dentro de uma fonte marcada
-      const m = file.basename.match(/^(\d{4}-\d{2}-\d{2})/);
-      const d = normalizeDate(this.app.metadataCache.getCache(file.path)?.frontmatter?.date) ?? (m ? m[1] : null);
-      if (d) (byDay[d] ??= []).push({ name: file.basename, file, color });
+      (byDay[date] ??= []).push({ name: file.basename, file, color });
     }
 
     const sec = root.createDiv({ cls: "wd-section wd-cal-section" });
@@ -1530,10 +1531,7 @@ class DashboardView extends ItemView {
   private findDailyNote(key: string): TFile | null {
     const direct = this.app.vault.getAbstractFileByPath(`${DAILY_FOLDER}/${key}.md`);
     if (direct instanceof TFile) return direct;
-    for (const f of this.app.vault.getMarkdownFiles()) {
-      if (normalizeDate(this.app.metadataCache.getCache(f.path)?.frontmatter?.date) === key) return f;
-    }
-    return null;
+    return this.plugin.getVaultCache().datedNotes.find(n => n.date === key)?.file ?? null;
   }
 
   // Abre a nota diária de `key`; cria em 50.Diário/ SÓ se não existir nenhuma.
@@ -1596,15 +1594,16 @@ permissions:
       .filter(f => !f.name.startsWith("."))   // ignora .obsidian, .trash, etc.
       .sort((a, b) => a.name.localeCompare(b.name, "pt"));
     const activeRoot = this.navPath ? this.topFolderOf(this.navPath) : null;
+    const cache = this.plugin.getVaultCache();
 
     let idx = 0;
     for (const folder of folders) {
       if (this.isHidden(folder.path)) continue;
 
+      const agg     = cache.byFolder.get(folder.path) ?? EMPTY_AGG;
       const meta    = folderMeta(this.app, folder);
-      const stats   = folderStats(folder);
       const cover   = coverInFolder(this.app, folder);
-      const navigable = subFolders(folder).length > 0 || filesIn(folder).length > 0;
+      const navigable = this.subFoldersOf(folder).length > 0 || filesIn(folder).length > 0;
       const isActive = activeRoot === folder.path;
 
       const card = grid.createDiv({ cls: "wd-card wd-para-card wd-anim-in" + (isActive ? " wd-active" : "") });
@@ -1620,25 +1619,24 @@ permissions:
       }
       card.createDiv({ cls: "wd-accent-bar" }).style.background = meta.accent;
 
-      this.urgencyBadge(card, urgencyStats(this.app, folder));
+      this.urgencyBadge(card, { items: agg.urgency, max: agg.urgencyMax });
 
       const body = card.createDiv({ cls: "wd-card-body" });
       const top  = body.createDiv({ cls: "wd-card-top" });
       renderIcon(top.createSpan({ cls: "wd-icon" }), meta.icon);
-      top.createSpan({ cls: "wd-count", text: countText(stats) });
+      top.createSpan({ cls: "wd-count", text: countText({ md: agg.md, img: agg.img }) });
       body.createDiv({ cls: "wd-label",  text: meta.label });
       body.createDiv({ cls: "wd-folder", text: folder.path });
       if (navigable) body.createDiv({ cls: "wd-has-subs", text: isActive ? "fechar ▾" : "abrir ›" });
 
-      const rv = reviewedStats(this.app, folder);
-      if (rv.total > 0) {
+      if (agg.md > 0) {
         const bar = body.createDiv({ cls: "wd-progress" });
-        bar.setAttr("title", `${rv.reviewed}/${rv.total} revisadas`);
+        bar.setAttr("title", `${agg.reviewed}/${agg.md} revisadas`);
         const fill = bar.createDiv({ cls: "wd-progress-fill" });
-        fill.style.width = `${Math.round(rv.reviewed / rv.total * 100)}%`;
+        fill.style.width = `${Math.round(agg.reviewed / agg.md * 100)}%`;
       }
 
-      this.attachTip(card, folder);
+      this.attachTip(card, agg.recent);
 
       card.onclick = () => {
         if (navigable) { this.navPath = isActive ? null : folder.path; this.searchTerm = ""; this.render(); }
@@ -1711,14 +1709,15 @@ permissions:
     });
 
     // Subpastas como cards
-    const subs = subFolders(folder);
+    const cache = this.plugin.getVaultCache();
+    const subs = this.subFoldersOf(folder);
     if (subs.length) {
       const sgrid = panel.createDiv({ cls: "wd-proj-grid" });
       for (const sf of subs) {
+        const agg    = cache.byFolder.get(sf.path) ?? EMPTY_AGG;
         const status = readFolderStatus(this.app, sf);
-        const stats  = folderStats(sf);
         const cover  = coverInFolder(this.app, sf);
-        const deeper = subFolders(sf).length > 0;
+        const deeper = this.subFoldersOf(sf).length > 0;
         const customIcon = readFolderIcon(this.app, sf);
 
         const card = sgrid.createDiv({ cls: `wd-card wd-sub-card wd-s-${status}` });
@@ -1732,31 +1731,28 @@ permissions:
         }
 
         card.createDiv({ cls: `wd-badge wd-badge-${status}`, text: STATUS_ICON[status] });
-        this.urgencyBadge(card, urgencyStats(this.app, sf));
+        this.urgencyBadge(card, { items: agg.urgency, max: agg.urgencyMax });
 
         const body = card.createDiv({ cls: "wd-card-body" });
         const top  = body.createDiv({ cls: "wd-card-top" });
         if (customIcon) renderIcon(top.createSpan({ cls: "wd-icon wd-sub-icon" }), customIcon);
-        top.createSpan({ cls: "wd-count", text: countText(stats) });
+        top.createSpan({ cls: "wd-count", text: countText({ md: agg.md, img: agg.img }) });
         if (deeper) top.createSpan({ cls: "wd-sub-arrow", text: "›" });
 
         const label = body.createDiv({ cls: "wd-label", text: sf.name });
         if (status === "cancelled") label.addClass("wd-strike");
 
-        if (status !== "cancelled") {
-          const rv = reviewedStats(this.app, sf);
-          if (rv.total > 0) {
-            const bar = body.createDiv({ cls: "wd-progress" });
-            bar.setAttr("title", `${rv.reviewed}/${rv.total} revisadas`);
-            const fill = bar.createDiv({ cls: "wd-progress-fill" });
-            fill.style.width = `${Math.round(rv.reviewed / rv.total * 100)}%`;
-          }
+        if (status !== "cancelled" && agg.md > 0) {
+          const bar = body.createDiv({ cls: "wd-progress" });
+          bar.setAttr("title", `${agg.reviewed}/${agg.md} revisadas`);
+          const fill = bar.createDiv({ cls: "wd-progress-fill" });
+          fill.style.width = `${Math.round(agg.reviewed / agg.md * 100)}%`;
         }
 
         if (status === "cancelled") {
           card.style.cursor = "default";
         } else {
-          this.attachTip(card, sf);
+          this.attachTip(card, agg.recent);
           card.onclick = () => { this.navPath = sf.path; this.searchTerm = ""; this.render(); };
         }
       }
@@ -1786,18 +1782,14 @@ permissions:
       return;
     }
 
-    // Notas criadas por dia, no ano corrente.
+    // Notas criadas por dia (do cache), filtradas pelo ano corrente.
     const year = new Date().getFullYear();
-    const counts: Record<string, number> = {};
-    for (const f of this.app.vault.getMarkdownFiles()) {
-      const d = new Date(f.stat.ctime);
-      if (d.getFullYear() !== year) continue;
-      const key = toKey(d);
-      counts[key] = (counts[key] ?? 0) + 1;
+    const prefix = String(year);
+    const entries: HeatmapEntry[] = [];
+    for (const [date, n] of this.plugin.getVaultCache().ctimeByDay) {
+      if (!date.startsWith(prefix)) continue;
+      entries.push({ date, intensity: n, color: "green", content: `${n} nota(s)` });
     }
-    const entries: HeatmapEntry[] = Object.entries(counts).map(([date, n]) => ({
-      date, intensity: n, color: "green", content: `${n} nota(s)`,
-    }));
 
     const box = sec.createDiv({ cls: "wd-heat-box" });
     try {
@@ -1818,13 +1810,14 @@ permissions:
   private renderStats(root: HTMLElement) {
     if (this.isHidden(SEC_STAT)) return;
 
-    let totalNotes = 0, totalReviewed = 0, createdThisWeek = 0;
-    const weekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-    for (const f of this.app.vault.getMarkdownFiles()) {
-      if (f.name === "status.md") continue;
-      totalNotes++;
-      if (this.app.metadataCache.getCache(f.path)?.frontmatter?.reviewed === true) totalReviewed++;
-      if (f.stat.ctime >= weekAgo) createdThisWeek++;
+    const cache = this.plugin.getVaultCache();
+    const totalNotes = cache.totalNotes;
+    const totalReviewed = cache.totalReviewed;
+    // "esta semana" = criações nos últimos 7 dias (do cache, por data → sempre fresco).
+    let createdThisWeek = 0;
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      createdThisWeek += cache.ctimeByDay.get(toKey(d)) ?? 0;
     }
     const globalPct = totalNotes > 0 ? Math.round(totalReviewed / totalNotes * 100) : 0;
 
@@ -1852,10 +1845,10 @@ permissions:
 
     for (const folder of folders) {
       if (this.isHidden(folder.path)) continue;
-      const rv = reviewedStats(this.app, folder);
-      if (rv.total === 0) continue;
+      const agg = cache.byFolder.get(folder.path) ?? EMPTY_AGG;
+      if (agg.md === 0) continue;
       const meta = folderMeta(this.app, folder);
-      const pct = Math.round(rv.reviewed / rv.total * 100);
+      const pct = Math.round(agg.reviewed / agg.md * 100);
 
       const row = table.createDiv({ cls: "wd-stat-row" });
       row.style.setProperty("--accent", meta.accent);
@@ -1864,10 +1857,10 @@ permissions:
       renderIcon(nameEl.createSpan({ cls: "wd-stat-icon" }), meta.icon);
       nameEl.createSpan({ text: meta.label });
 
-      row.createDiv({ cls: "wd-stat-count", text: `${rv.total}` });
+      row.createDiv({ cls: "wd-stat-count", text: `${agg.md}` });
 
       const barWrap = row.createDiv({ cls: "wd-stat-bar" });
-      barWrap.setAttr("title", `${rv.reviewed}/${rv.total} revisadas (${pct}%)`);
+      barWrap.setAttr("title", `${agg.reviewed}/${agg.md} revisadas (${pct}%)`);
       const fill = barWrap.createDiv({ cls: "wd-stat-bar-fill" });
       fill.style.width = `${pct}%`;
 
@@ -1963,12 +1956,8 @@ permissions:
     btnCum.setAttr("title", "Total acumulado no período");
     btnCum.onclick = e => { e.stopPropagation(); this.growthCumulative = true; this.render(); };
 
-    // Agrupa notas por data de criação
-    const counts: Record<string, number> = {};
-    for (const f of this.app.vault.getMarkdownFiles()) {
-      const key = toKey(new Date(f.stat.ctime));
-      counts[key] = (counts[key] ?? 0) + 1;
-    }
+    // Notas por data de criação (do cache).
+    const counts = this.plugin.getVaultCache().ctimeByDay;
 
     // Últimos N dias (menos no celular)
     const DAYS = Platform.isPhone ? 15 : 30;
@@ -1978,7 +1967,7 @@ permissions:
       d.setDate(d.getDate() - i);
       const key = toKey(d);
       const [, m, day] = key.split("-");
-      days.push({ key, count: counts[key] ?? 0, label: `${day}/${m}` });
+      days.push({ key, count: counts.get(key) ?? 0, label: `${day}/${m}` });
     }
 
     const total = days.reduce((s, d) => s + d.count, 0);
@@ -2202,6 +2191,15 @@ export default class WerusDashboard extends Plugin {
   settings: DashSettings = DEFAULT_SETTINGS;
   // Controlador único do Todoist (estado compartilhado entre dashboard e aba).
   todo!: TodoistController;
+  // Cache do cofre (§3): montado 1x por ciclo, invalidado nos eventos do vault.
+  private vaultCache: VaultCache | null = null;
+
+  // Agregados do cofre (uma passada), reusados por todas as seções no render.
+  getVaultCache(): VaultCache {
+    if (!this.vaultCache) this.vaultCache = buildVaultCache(this.app);
+    return this.vaultCache;
+  }
+  invalidateVaultCache() { this.vaultCache = null; }
 
   async onload() {
     await this.loadSettings();

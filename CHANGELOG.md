@@ -6,6 +6,13 @@
 
 ---
 
+## [0.12.8] — alpha — 2026-06-10
+
+**Saúde técnica (§3): uma passada do cofre, cacheada.** (Refactor de performance, sem mudança visível.)
+
+- Montar a dashboard varria o cofre ~8–10× por render (cada seção contava por conta própria). Agora **uma passada** (`buildVaultCache`) monta os agregados por pasta (notas/imagens/revisadas/urgência/recentes) + globais (total, criadas por dia); todas as seções leem do cache, invalidado nos eventos do vault.
+- Removidos os walks redundantes (`folderStats`/`reviewedStats`/`urgencyStats`/`recentNotes`/`isAssetFolder`/`subFolders`). Dashboard mais leve para abrir/re-renderizar, sobretudo em cofres grandes e no celular.
+
 ## [0.12.7] — alpha — 2026-06-10
 
 **Saúde técnica (§2 + §6): render por seção + controller único do Todoist.** (Refactor de base, sem mudança visível.)
