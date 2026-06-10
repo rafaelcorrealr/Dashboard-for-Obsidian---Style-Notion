@@ -6,6 +6,13 @@
 
 ---
 
+## [0.12.7] — alpha — 2026-06-10
+
+**Saúde técnica (§2 + §6): render por seção + controller único do Todoist.** (Refactor de base, sem mudança visível.)
+
+- Estado do Todoist **único e compartilhado** entre o dashboard e a aba dedicada: concluir/criar/editar/lançar numa tela reflete na outra na hora; uma busca só à API (antes cada view tinha a própria instância).
+- Atualizar o Todoist ou o Syncthing re-renderiza **só aquela seção** (cada seção num host estável), em vez de reconstruir a view inteira a cada ação.
+
 ## [0.12.6] — alpha — 2026-06-10
 
 **Saúde técnica (§1 da revisão): credenciais do Syncthing por dispositivo.**

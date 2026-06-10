@@ -733,13 +733,21 @@ class TodoistController {
   private filterOpen = false;
   private tip: HTMLElement | null = null;
   private launching = new Set<string>();   // ids de pacotes sendo lançados (anti clique-duplo)
+  private subs = new Set<() => void>();     // views inscritas (re-render da seção Todoist)
 
   constructor(
     private app: App,
     private plugin: WerusDashboard,
     private component: Component,
-    private rerender: () => void,
   ) {}
+
+  // Inscreve uma view; devolve a função de cancelar. O callback re-renderiza só a
+  // seção Todoist daquela view (não a view inteira). Estado é único e compartilhado.
+  subscribe(cb: () => void): () => void {
+    this.subs.add(cb);
+    return () => { this.subs.delete(cb); };
+  }
+  private rerenderAll() { for (const cb of this.subs) cb(); }
 
   reset() {
     this.tasks = [];
@@ -749,7 +757,7 @@ class TodoistController {
     this.fetchedAt = 0;
     this.error = null;
     this.loading = false;
-    this.rerender();
+    this.rerenderAll();
   }
 
   hideTip() { if (this.tip) { this.tip.remove(); this.tip = null; } }
@@ -923,7 +931,7 @@ class TodoistController {
     if (!token) return false;
     const idx = this.tasks.findIndex(x => x.id === t.id);
     if (idx >= 0) this.tasks.splice(idx, 1);
-    this.rerender();
+    this.rerenderAll();
     try {
       await deleteTodoistTask(token, t.id);
       new Notice(`🗑 Excluída: ${t.content}`);
@@ -931,7 +939,7 @@ class TodoistController {
     } catch (e) {
       if (idx >= 0) this.tasks.splice(idx, 0, t);
       new Notice(`Falha ao excluir: ${e instanceof Error ? e.message : String(e)}`);
-      this.rerender();
+      this.rerenderAll();
       return false;
     }
   }
@@ -941,14 +949,14 @@ class TodoistController {
     if (!token) return;
     const idx = this.tasks.findIndex(x => x.id === t.id);
     if (idx >= 0) this.tasks.splice(idx, 1);
-    this.rerender();
+    this.rerenderAll();
     try {
       await closeTodoistTask(token, t.id);
       new Notice(`✓ Concluída: ${t.content}`);
     } catch (e) {
       if (idx >= 0) this.tasks.splice(idx, 0, t);
       new Notice(`Falha ao concluir: ${e instanceof Error ? e.message : String(e)}`);
-      this.rerender();
+      this.rerenderAll();
     }
   }
 
@@ -957,7 +965,7 @@ class TodoistController {
     if (!token || this.loading) return;
     this.loading = true;
     this.error = null;
-    if (manual) this.rerender();
+    if (manual) this.rerenderAll();
     try {
       const [tasks, projects, labels] = await Promise.all([
         fetchTodoistTasks(token),
@@ -973,7 +981,7 @@ class TodoistController {
       this.error = e instanceof Error ? e.message : String(e);
     } finally {
       this.loading = false;
-      this.rerender();
+      this.rerenderAll();
     }
   }
 
@@ -1004,7 +1012,7 @@ class TodoistController {
     }
 
     this.launching.add(pkg.id);
-    this.rerender();   // mostra o botão como "lançando…"
+    this.rerenderAll();   // mostra o botão como "lançando…"
     const due = toKey(new Date());
     let ok = 0;
     try {
@@ -1073,7 +1081,7 @@ class TodoistController {
       for (const p of this.projects) {
         const on = f.projects.includes(p.id);
         const chip = grp.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: p.name });
-        chip.onclick = async () => { this.toggleFilter("projects", p.id); await this.plugin.saveSettings(); this.rerender(); };
+        chip.onclick = async () => { this.toggleFilter("projects", p.id); await this.plugin.saveSettings(); this.rerenderAll(); };
       }
     }
     const labels = [...new Set(this.tasks.flatMap(t => t.labels ?? []))].sort((a, b) => a.localeCompare(b));
@@ -1083,12 +1091,12 @@ class TodoistController {
       for (const l of labels) {
         const on = f.labels.includes(l);
         const chip = this.labelChip(grp, l, "wd-todo-fchip" + (on ? " wd-on" : ""));
-        chip.onclick = async () => { this.toggleFilter("labels", l); await this.plugin.saveSettings(); this.rerender(); };
+        chip.onclick = async () => { this.toggleFilter("labels", l); await this.plugin.saveSettings(); this.rerenderAll(); };
       }
     }
     if (f.projects.length || f.labels.length) {
       const clr = bar.createSpan({ cls: "wd-todo-fclear", text: "limpar filtros" });
-      clr.onclick = async () => { f.projects = []; f.labels = []; await this.plugin.saveSettings(); this.rerender(); };
+      clr.onclick = async () => { f.projects = []; f.labels = []; await this.plugin.saveSettings(); this.rerenderAll(); };
     }
   }
 
@@ -1106,7 +1114,7 @@ class TodoistController {
           e.stopPropagation();
           this.plugin.settings.todoistDayRange = n;
           await this.plugin.saveSettings();
-          this.rerender();
+          this.rerenderAll();
         };
       }
       const f = this.plugin.settings.todoistFilters;
@@ -1115,7 +1123,7 @@ class TodoistController {
       setIcon(filt, "filter");
       filt.setAttr("title", nF ? `Filtros ativos (${nF}) — clique para ajustar` : "Filtrar por projeto/etiqueta");
       if (nF) filt.createSpan({ cls: "wd-todo-filtct", text: String(nF) });
-      filt.onclick = e => { e.stopPropagation(); this.filterOpen = !this.filterOpen; this.rerender(); };
+      filt.onclick = e => { e.stopPropagation(); this.filterOpen = !this.filterOpen; this.rerenderAll(); };
       const refresh = ctrls.createSpan({ cls: "wd-todo-refresh" + (this.loading ? " wd-spin" : "") });
       setIcon(refresh, "refresh-cw");
       refresh.setAttr("title", "Atualizar tarefas do Todoist");
@@ -1225,7 +1233,7 @@ class TodoistController {
       lhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
       lhd.createSpan({ cls: "wd-todo-otitle", text: `Depois (${later.length})` });
       lhd.createSpan({ cls: "wd-todo-otoggle", text: this.laterOpen ? "ocultar ▾" : "mostrar ›" });
-      lhd.onclick = () => { this.laterOpen = !this.laterOpen; this.rerender(); };
+      lhd.onclick = () => { this.laterOpen = !this.laterOpen; this.rerenderAll(); };
       if (this.laterOpen) {
         const list = panel.createDiv({ cls: "wd-todo-olist" });
         for (const t of later) this.todoRow(list, t);
@@ -1242,9 +1250,8 @@ class DashboardView extends ItemView {
   private searchTerm = "";
   private reviewFilter = false;
   private growthCumulative = false;
-
-  // Integração Todoist — toda a lógica vive no controlador compartilhado.
-  readonly todo: TodoistController;
+  private secHosts = new Map<SectionId, HTMLElement>();   // wrapper estável por seção
+  private unsubTodo: (() => void) | null = null;          // cancelar inscrição no controller
 
   // Estado do Syncthing (v0.10.0)
   private syncData: SyncData | null = null;
@@ -1255,7 +1262,6 @@ class DashboardView extends ItemView {
 
   constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) {
     super(leaf);
-    this.todo = new TodoistController(this.app, this.plugin, this, () => this.render());
   }
 
   getViewType()    { return VIEW_TYPE; }
@@ -1264,11 +1270,18 @@ class DashboardView extends ItemView {
 
   async onOpen() {
     await this.render();
+    // Inscreve no controller único: mudança de estado re-renderiza só a seção Tarefas.
+    this.unsubTodo = this.plugin.todo.subscribe(() => this.renderSection("todoist"));
     for (const ev of ["modify", "create", "delete", "rename"] as const)
       this.registerEvent(this.app.vault.on(ev as "modify", () => this.schedule()));
   }
 
-  async onClose() { this.hideTip(); this.todo.hideTip(); }
+  async onClose() {
+    this.unsubTodo?.();
+    this.unsubTodo = null;
+    this.hideTip();
+    this.plugin.todo.hideTip();
+  }
 
   // Re-render público — chamado pelo plugin quando a configuração muda na aba
   // de Configurações (ordem das seções, ocultar/mostrar, fontes da Semana).
@@ -1287,22 +1300,35 @@ class DashboardView extends ItemView {
 
   async render() {
     this.hideTip();
-    this.todo.hideTip();
+    this.plugin.todo.hideTip();
     const root = this.contentEl;
     root.empty();
     root.addClass("wd-root");
     root.toggleClass("wd-compact", this.plugin.settings.compact);
 
     this.renderHeader(root);
+    // Cada seção mora num host estável → dá para re-renderizar uma seção só
+    // (ex.: refresh do Todoist/Syncthing) sem reconstruir a view inteira.
+    this.secHosts.clear();
     for (const id of this.plugin.settings.sectionOrder) {
-      if (id === "calendar")     this.renderCalendar(root);
-      else if (id === "para")    this.renderPara(root);
-      else if (id === "heatmap") this.renderHeatmap(root);
-      else if (id === "growth")  this.renderGrowth(root);
-      else if (id === "stats")   this.renderStats(root);
-      else if (id === "todoist") this.renderTodoist(root);
-      else if (id === "sync")    this.renderSync(root);
+      const host = root.createDiv({ cls: "wd-sec-host" });
+      this.secHosts.set(id, host);
+      this.renderSection(id);
     }
+  }
+
+  // Re-renderiza apenas a seção `id` dentro do seu host (sem tocar nas outras).
+  private renderSection(id: SectionId) {
+    const host = this.secHosts.get(id);
+    if (!host) return;
+    host.empty();
+    if (id === "calendar")     this.renderCalendar(host);
+    else if (id === "para")    this.renderPara(host);
+    else if (id === "heatmap") this.renderHeatmap(host);
+    else if (id === "growth")  this.renderGrowth(host);
+    else if (id === "stats")   this.renderStats(host);
+    else if (id === "todoist") this.renderTodoist(host);
+    else if (id === "sync")    this.renderSync(host);
   }
 
   // ── Ocultar (leitura) ─────────────────────────────────────────────────────
@@ -2003,10 +2029,10 @@ permissions:
     open.setAttr("title", "Abrir a aba do Todoist");
     open.onclick = e => { e.stopPropagation(); void this.plugin.openTodoist(); };
     // Lançador de pacotes compacto (some se não houver pacotes).
-    this.todo.renderPackages(sec);
+    this.plugin.todo.renderPackages(sec);
     // Dashboard = só o essencial (Atrasadas · Hoje · Próximos 7). "Depois" fica
     // só na aba do Todoist → recorrentes só aparecem aqui perto do dia.
-    this.todo.renderList(sec, ctrls, { showLater: false });
+    this.plugin.todo.renderList(sec, ctrls, { showLater: false });
   }
 
   // ── Sincronização (Syncthing + conflitos) — v0.10.0 ───────────────────────
@@ -2016,7 +2042,7 @@ permissions:
     this.syncFetchedAt = 0;
     this.syncError = null;
     this.syncLoading = false;
-    this.render();
+    this.renderSection("sync");
   }
 
   private async fetchSync(manual: boolean) {
@@ -2025,7 +2051,7 @@ permissions:
     if (!base || !key || this.syncLoading) return;
     this.syncLoading = true;
     this.syncError = null;
-    if (manual) this.render();
+    if (manual) this.renderSection("sync");
     try {
       const folders = await stGet<STFolder[]>(base, key, "/rest/config/folders");
       const wanted = this.plugin.settings.syncthingFolderId.trim();
@@ -2070,7 +2096,7 @@ permissions:
       this.syncError = e instanceof Error ? e.message : String(e);
     } finally {
       this.syncLoading = false;
-      this.render();
+      this.renderSection("sync");
     }
   }
 
@@ -2148,14 +2174,14 @@ permissions:
       name.onclick = () => this.app.workspace.getLeaf(false).openFile(f);
       if (this.conflictConfirm === f.path) {
         const yes = row.createSpan({ cls: "wd-sync-cyes", text: "apagar?" });
-        yes.onclick = async () => { await this.app.vault.trash(f, false); this.conflictConfirm = null; this.render(); };
+        yes.onclick = async () => { await this.app.vault.trash(f, false); this.conflictConfirm = null; this.renderSection("sync"); };
         const no = row.createSpan({ cls: "wd-sync-cno", text: "cancelar" });
-        no.onclick = () => { this.conflictConfirm = null; this.render(); };
+        no.onclick = () => { this.conflictConfirm = null; this.renderSection("sync"); };
       } else {
         const del = row.createSpan({ cls: "wd-sync-cdel" });
         setIcon(del, "trash-2");
         del.setAttr("title", "Apagar cópia de conflito (vai para a lixeira)");
-        del.onclick = () => { this.conflictConfirm = f.path; this.render(); };
+        del.onclick = () => { this.conflictConfirm = f.path; this.renderSection("sync"); };
       }
     }
   }
@@ -2174,9 +2200,12 @@ permissions:
 
 export default class WerusDashboard extends Plugin {
   settings: DashSettings = DEFAULT_SETTINGS;
+  // Controlador único do Todoist (estado compartilhado entre dashboard e aba).
+  todo!: TodoistController;
 
   async onload() {
     await this.loadSettings();
+    this.todo = new TodoistController(this.app, this, this);
     this.registerView(VIEW_TYPE, leaf => new DashboardView(leaf, this));
     this.registerView(TODOIST_VIEW_TYPE, leaf => new TodoistView(leaf, this));
     this.addRibbonIcon("layout-dashboard", "Abrir Werus Dashboard", () => this.open());
@@ -2197,9 +2226,9 @@ export default class WerusDashboard extends Plugin {
     return out;
   }
 
-  // Re-busca o Todoist em todas as views abertas (ex.: após mudar o token).
+  // Re-busca o Todoist (controller único → notifica todas as views inscritas).
   refreshDashboards() {
-    for (const v of this.todoViews()) v.todo.reset();
+    this.todo.reset();
   }
 
   // Reseta o estado do Syncthing nas dashboards (ex.: token/URL alterados).
@@ -2344,19 +2373,25 @@ export default class WerusDashboard extends Plugin {
 // Hub do Todoist na área central (não é sidebar): lançador de pacotes + a mesma
 // lista de tarefas do dashboard (via TodoistController compartilhado).
 class TodoistView extends ItemView {
-  readonly todo: TodoistController;
+  private unsubTodo: (() => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) {
     super(leaf);
-    this.todo = new TodoistController(this.app, this.plugin, this, () => this.refresh());
   }
 
   getViewType()    { return TODOIST_VIEW_TYPE; }
   getDisplayText() { return "Todoist"; }
   getIcon()        { return "list-checks"; }
 
-  async onOpen() { this.refresh(); }
-  async onClose() { this.todo.hideTip(); }
+  async onOpen() {
+    this.refresh();
+    this.unsubTodo = this.plugin.todo.subscribe(() => this.refresh());
+  }
+  async onClose() {
+    this.unsubTodo?.();
+    this.unsubTodo = null;
+    this.plugin.todo.hideTip();
+  }
 
   refresh() {
     const root = this.contentEl;
@@ -2368,13 +2403,13 @@ class TodoistView extends ItemView {
     txt.createDiv({ cls: "wd-date", text: todayBR() });
     txt.createDiv({ cls: "wd-title", text: "Todoist" });
 
-    this.todo.renderPackages(root, { heading: true });
+    this.plugin.todo.renderPackages(root, { heading: true });
 
     const sec = root.createDiv({ cls: "wd-section wd-todo-section" });
     const head = sec.createDiv({ cls: "wd-sec-head" });
     head.createDiv({ cls: "wd-sec-label", text: "TAREFAS" });
     const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
-    this.todo.renderList(sec, ctrls);
+    this.plugin.todo.renderList(sec, ctrls);
   }
 }
 
