@@ -37,6 +37,20 @@ body {
   box-sizing: border-box;
 }
 
+/* Acessibilidade: foco por teclado discreto — só :focus-visible (não aparece no clique
+   com mouse), preservando o visual limpo. Vale para todo clicável do plugin (role=button),
+   inclusive popovers (.wd-pop) e as linhas de pacote nas Configurações (.wd-pkg-row). */
+.wd-root [role="button"],
+.wd-pop [role="button"],
+.wd-pkg-row [role="button"] { outline: none; }
+.wd-root [role="button"]:focus-visible,
+.wd-pop [role="button"]:focus-visible,
+.wd-pkg-row [role="button"]:focus-visible {
+  outline: 2px solid var(--interactive-accent);
+  outline-offset: 1px;
+  border-radius: 4px;
+}
+
 /* ── Header ──────────────────────────────────────────────────────────────── */
 .wd-header {
   margin-bottom: 24px;

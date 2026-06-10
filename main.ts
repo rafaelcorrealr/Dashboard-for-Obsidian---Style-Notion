@@ -196,6 +196,19 @@ function splitTaskLabels(line: string, pkgLabels: string[] = []): { title: strin
   return { title, labels };
 }
 
+// Acessibilidade: faz um elemento clicável (div/span) se comportar como botão —
+// foco por teclado (Tab), papel ARIA e ativação por Enter/Espaço (dispara o próprio
+// onclick). O nome acessível vem do texto/`title` que o chamador já define.
+function clickable<T extends HTMLElement>(el: T, handler: (e: MouseEvent) => void): T {
+  el.onclick = handler;
+  el.setAttribute("role", "button");
+  el.setAttribute("tabindex", "0");
+  el.addEventListener("keydown", (e: KeyboardEvent) => {
+    if (e.key === "Enter" || e.key === " ") { e.preventDefault(); el.click(); }
+  });
+  return el;
+}
+
 // Popover flutuante genérico, ancorado num elemento. `fill(body, close)` monta o
 // conteúdo. Fecha ao clicar fora ou Escape (opts.onClose roda antes de remover).
 function openPopover(
@@ -243,12 +256,12 @@ function openIconPopover(anchor: HTMLElement, current: string | undefined, onPic
   openPopover(anchor, (pop, close) => {
     const none = pop.createSpan({ cls: "wd-pkg-iconopt wd-pkg-iconnone" + (!current ? " wd-on" : ""), text: "—" });
     none.setAttr("title", "Sem ícone");
-    none.onclick = () => { onPick(undefined); close(); };
+    clickable(none, () => { onPick(undefined); close(); });
     for (const ic of PKG_ICONS) {
       const opt = pop.createSpan({ cls: "wd-pkg-iconopt" + (current === ic ? " wd-on" : "") });
       renderIcon(opt, ic);
       opt.setAttr("title", ic);
-      opt.onclick = () => { onPick(ic); close(); };
+      clickable(opt, () => { onPick(ic); close(); });
     }
   }, { cls: "wd-icon-pop" });
 }
@@ -833,7 +846,7 @@ class TodoistController {
   private todoCheck(host: HTMLElement, t: TodoistTask) {
     const check = host.createSpan({ cls: "wd-todo-check" });
     check.setAttr("title", "Concluir tarefa");
-    check.onclick = e => { e.stopPropagation(); void this.completeTask(t); };
+    clickable(check, e => { e.stopPropagation(); void this.completeTask(t); });
   }
 
   private todoRow(list: HTMLElement, t: TodoistTask, showDate = true) {
@@ -855,7 +868,7 @@ class TodoistController {
       row.createSpan({ cls: "wd-todo-row-date", text: `${d}/${m}` });
     }
     if (t.due?.is_recurring) row.createSpan({ cls: "wd-todo-recur", text: "⟳" });
-    row.onclick = () => this.openTaskDetail(t);
+    clickable(row, () => this.openTaskDetail(t));
     this.attachTaskTip(row, t);
   }
 
@@ -863,7 +876,7 @@ class TodoistController {
     const b = host.createSpan({ cls: "wd-todo-add" });
     setIcon(b, "plus");
     b.setAttr("title", title);
-    b.onclick = e => { e.stopPropagation(); this.openTaskForm({ mode: "create", prefillDue }); };
+    clickable(b, e => { e.stopPropagation(); this.openTaskForm({ mode: "create", prefillDue }); });
     return b;
   }
 
@@ -1120,7 +1133,7 @@ class TodoistController {
         !token ? "Configure o token do Todoist" :
         !valid ? "Pacote sem tarefas" :
         `Lançar ${valid} tarefa(s) no Todoist (hoje)`);
-      if (!disabled) btn.onclick = () => void this.launchPackage(pkg);
+      if (!disabled) clickable(btn, () => void this.launchPackage(pkg));
     }
   }
 
@@ -1133,7 +1146,8 @@ class TodoistController {
       for (const p of this.projects) {
         const on = f.projects.includes(p.id);
         const chip = grp.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : ""), text: p.name });
-        chip.onclick = async () => { this.toggleFilter("projects", p.id); await this.plugin.saveSettings(); this.rerenderAll(); };
+        chip.setAttr("aria-pressed", String(on));
+        clickable(chip, async () => { this.toggleFilter("projects", p.id); await this.plugin.saveSettings(); this.rerenderAll(); });
       }
     }
     const labels = [...new Set(this.tasks.flatMap(t => t.labels ?? []))].sort((a, b) => a.localeCompare(b));
@@ -1143,12 +1157,13 @@ class TodoistController {
       for (const l of labels) {
         const on = f.labels.includes(l);
         const chip = this.labelChip(grp, l, "wd-todo-fchip" + (on ? " wd-on" : ""));
-        chip.onclick = async () => { this.toggleFilter("labels", l); await this.plugin.saveSettings(); this.rerenderAll(); };
+        chip.setAttr("aria-pressed", String(on));
+        clickable(chip, async () => { this.toggleFilter("labels", l); await this.plugin.saveSettings(); this.rerenderAll(); });
       }
     }
     if (f.projects.length || f.labels.length) {
       const clr = bar.createSpan({ cls: "wd-todo-fclear", text: "limpar filtros" });
-      clr.onclick = async () => { f.projects = []; f.labels = []; await this.plugin.saveSettings(); this.rerenderAll(); };
+      clickable(clr, async () => { f.projects = []; f.labels = []; await this.plugin.saveSettings(); this.rerenderAll(); });
     }
   }
 
@@ -1162,12 +1177,13 @@ class TodoistController {
       for (const n of [3, 7] as const) {
         const b = seg.createSpan({ cls: "wd-todo-range-btn" + (range === n ? " wd-on" : ""), text: `${n}d` });
         b.setAttr("title", `Mostrar os próximos ${n} dias`);
-        b.onclick = async e => {
+        b.setAttr("aria-pressed", String(range === n));
+        clickable(b, async e => {
           e.stopPropagation();
           this.plugin.settings.todoistDayRange = n;
           await this.plugin.saveSettings();
           this.rerenderAll();
-        };
+        });
       }
       const f = this.plugin.settings.todoistFilters;
       const nF = f.projects.length + f.labels.length;
@@ -1175,11 +1191,12 @@ class TodoistController {
       setIcon(filt, "filter");
       filt.setAttr("title", nF ? `Filtros ativos (${nF}) — clique para ajustar` : "Filtrar por projeto/etiqueta");
       if (nF) filt.createSpan({ cls: "wd-todo-filtct", text: String(nF) });
-      filt.onclick = e => { e.stopPropagation(); this.filterOpen = !this.filterOpen; this.rerenderAll(); };
+      filt.setAttr("aria-pressed", String(this.filterOpen));
+      clickable(filt, e => { e.stopPropagation(); this.filterOpen = !this.filterOpen; this.rerenderAll(); });
       const refresh = ctrls.createSpan({ cls: "wd-todo-refresh" + (this.loading ? " wd-spin" : "") });
       setIcon(refresh, "refresh-cw");
       refresh.setAttr("title", "Atualizar tarefas do Todoist");
-      refresh.onclick = e => { e.stopPropagation(); void this.fetch(true); };
+      clickable(refresh, e => { e.stopPropagation(); void this.fetch(true); });
       this.addTaskBtn(ctrls, undefined, "Nova tarefa");
     }
 
@@ -1299,7 +1316,8 @@ class TodoistController {
       lhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
       lhd.createSpan({ cls: "wd-todo-otitle", text: `Depois (${later.length})` });
       lhd.createSpan({ cls: "wd-todo-otoggle", text: this.laterOpen ? "ocultar ▾" : "mostrar ›" });
-      lhd.onclick = () => { this.laterOpen = !this.laterOpen; this.rerenderAll(); };
+      lhd.setAttr("aria-expanded", String(this.laterOpen));
+      clickable(lhd, () => { this.laterOpen = !this.laterOpen; this.rerenderAll(); });
       if (this.laterOpen) {
         const list = panel.createDiv({ cls: "wd-todo-olist" });
         for (const t of later) this.todoRow(list, t);
@@ -1312,7 +1330,8 @@ class TodoistController {
       nhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
       nhd.createSpan({ cls: "wd-todo-otitle", text: `Sem data (${noDate.length})` });
       nhd.createSpan({ cls: "wd-todo-otoggle", text: this.noDateOpen ? "ocultar ▾" : "mostrar ›" });
-      nhd.onclick = () => { this.noDateOpen = !this.noDateOpen; this.rerenderAll(); };
+      nhd.setAttr("aria-expanded", String(this.noDateOpen));
+      clickable(nhd, () => { this.noDateOpen = !this.noDateOpen; this.rerenderAll(); });
       if (this.noDateOpen) {
         const list = panel.createDiv({ cls: "wd-todo-olist" });
         for (const t of noDate) this.todoRow(list, t);
@@ -1539,8 +1558,10 @@ class DashboardView extends ItemView {
     const ctrls = nav.createDiv({ cls: "wd-cal-ctrls" });
     const prev = ctrls.createSpan({ cls: "wd-cal-arrow", text: "‹" });
     const next = ctrls.createSpan({ cls: "wd-cal-arrow", text: "›" });
-    prev.onclick = () => { this.weekOffset--; this.render(); };
-    next.onclick = () => { this.weekOffset++; this.render(); };
+    prev.setAttr("title", "Semana anterior");
+    next.setAttr("title", "Próxima semana");
+    clickable(prev, () => { this.weekOffset--; this.render(); });
+    clickable(next, () => { this.weekOffset++; this.render(); });
 
     // ── Celular: lista vertical de 3 dias (ontem/hoje/amanhã) ───────────────
     // Cada dia = a nota diária (uma por dia). Linha inteira clicável: abre a
@@ -1567,7 +1588,7 @@ class DashboardView extends ItemView {
         } else {
           body.createSpan({ cls: "wd-cal-drow-empty", text: "criar nota diária" });
         }
-        row.onclick = () => void this.openDailyNote(key);
+        clickable(row, () => void this.openDailyNote(key));
       }
       return;
     }
@@ -1586,7 +1607,7 @@ class DashboardView extends ItemView {
       hd.createDiv({ cls: "wd-cal-name", text: DAY_SHORT[i] });
       hd.createDiv({ cls: "wd-cal-num",  text: String(day.getDate()) });
       hd.setAttr("title", "Abrir / criar nota diária");
-      hd.onclick = e => { e.stopPropagation(); void this.openDailyNote(key); };
+      clickable(hd, e => { e.stopPropagation(); void this.openDailyNote(key); });
 
       const items = byDay[key] ?? [];
       for (const it of items.slice(0, 3)) {
@@ -1594,7 +1615,8 @@ class DashboardView extends ItemView {
         pill.style.setProperty("--wd-src", it.color);
         pill.createSpan({ cls: "wd-cal-pill-dot" });
         pill.createSpan({ cls: "wd-cal-pill-txt", text: it.name.length > 14 ? it.name.slice(0, 14) + "…" : it.name });
-        pill.onclick = () => this.app.workspace.getLeaf(false).openFile(it.file);
+        pill.setAttr("title", it.name);
+        clickable(pill, () => this.app.workspace.getLeaf(false).openFile(it.file));
       }
       if (items.length > 3) col.createDiv({ cls: "wd-cal-more", text: `+${items.length - 3}` });
     }
@@ -1722,10 +1744,10 @@ permissions:
 
       this.attachTip(card, agg.recent);
 
-      card.onclick = () => {
+      clickable(card, () => {
         if (navigable) { this.navPath = isActive ? null : folder.path; this.searchTerm = ""; this.render(); }
         else revealInExplorer(this.app, folder);
-      };
+      });
     }
 
     if (!idx) sec.createDiv({ cls: "wd-empty", text: "Nenhuma pasta visível." });
@@ -1757,7 +1779,7 @@ permissions:
     const rootSeg = crumb.createSpan({ cls: "wd-crumb-seg" + (rel.length === 0 ? " wd-crumb-cur" : "") });
     renderIcon(rootSeg.createSpan({ cls: "wd-crumb-icon" }), meta.icon);
     rootSeg.createSpan({ text: meta.label });
-    if (rel.length) rootSeg.onclick = () => { this.navPath = rootPath; this.searchTerm = ""; this.render(); };
+    if (rel.length) clickable(rootSeg, () => { this.navPath = rootPath; this.searchTerm = ""; this.render(); });
 
     let acc = rootPath;
     rel.forEach((part, i) => {
@@ -1766,12 +1788,12 @@ permissions:
       acc = `${acc}/${part}`;
       const segPath = acc;
       const seg = crumb.createSpan({ cls: "wd-crumb-seg" + (isLast ? " wd-crumb-cur" : ""), text: part });
-      if (!isLast) seg.onclick = () => { this.navPath = segPath; this.searchTerm = ""; this.render(); };
+      if (!isLast) clickable(seg, () => { this.navPath = segPath; this.searchTerm = ""; this.render(); });
     });
 
     const close = crumb.createSpan({ cls: "wd-crumb-close", text: "✕" });
     close.setAttr("title", "Fechar");
-    close.onclick = () => { this.navPath = null; this.render(); };
+    clickable(close, () => { this.navPath = null; this.render(); });
 
     // Campo de busca
     const searchWrap = panel.createDiv({ cls: "wd-search-wrap" });
@@ -1837,7 +1859,7 @@ permissions:
           card.style.cursor = "default";
         } else {
           this.attachTip(card, agg.recent);
-          card.onclick = () => { this.navPath = sf.path; this.searchTerm = ""; this.render(); };
+          clickable(card, () => { this.navPath = sf.path; this.searchTerm = ""; this.render(); });
         }
       }
     }
@@ -1968,13 +1990,16 @@ permissions:
     const tog = hdr.createDiv({ cls: "wd-view-toggle" });
     const btnPend = tog.createSpan({ cls: "wd-view-btn" + (this.reviewFilter ? " wd-view-active wd-view-pend" : ""), text: "○" });
     btnPend.setAttr("title", "Mostrar só pendentes (não revisadas)");
-    btnPend.onclick = e => { e.stopPropagation(); this.reviewFilter = !this.reviewFilter; this.render(); };
+    btnPend.setAttr("aria-pressed", String(this.reviewFilter));
+    clickable(btnPend, e => { e.stopPropagation(); this.reviewFilter = !this.reviewFilter; this.render(); });
     const btnL = tog.createSpan({ cls: "wd-view-btn" + (!isGrid ? " wd-view-active" : ""), text: "≡" });
     btnL.setAttr("title", "Lista");
-    btnL.onclick = async e => { e.stopPropagation(); this.plugin.settings.noteView = "list"; await this.plugin.saveSettings(); this.render(); };
+    btnL.setAttr("aria-pressed", String(!isGrid));
+    clickable(btnL, async e => { e.stopPropagation(); this.plugin.settings.noteView = "list"; await this.plugin.saveSettings(); this.render(); });
     const btnG = tog.createSpan({ cls: "wd-view-btn" + (isGrid ? " wd-view-active" : ""), text: "⊞" });
     btnG.setAttr("title", "Colunas");
-    btnG.onclick = async e => { e.stopPropagation(); this.plugin.settings.noteView = "grid"; await this.plugin.saveSettings(); this.render(); };
+    btnG.setAttr("aria-pressed", String(isGrid));
+    clickable(btnG, async e => { e.stopPropagation(); this.plugin.settings.noteView = "grid"; await this.plugin.saveSettings(); this.render(); });
 
     if (!filtered.length) {
       parent.createDiv({ cls: "wd-empty", text: this.reviewFilter ? "Nenhuma nota pendente nesta pasta." : "Nenhuma nota." });
@@ -2000,7 +2025,7 @@ permissions:
         const name = card.createDiv({ cls: "wd-note-card-name", text: f.basename });
         if (st === "cancelled") name.addClass("wd-strike");
         card.createDiv({ cls: "wd-note-card-date", text: fmtShort(f.stat.mtime) });
-        if (st !== "cancelled") card.onclick = () => this.app.workspace.getLeaf(false).openFile(f);
+        if (st !== "cancelled") clickable(card, () => this.app.workspace.getLeaf(false).openFile(f));
       }
     } else {
       const list = parent.createDiv({ cls: "wd-note-list" });
@@ -2019,7 +2044,7 @@ permissions:
         if (st === "cancelled") name.addClass("wd-strike");
         if (urg) { const w = row.createSpan({ cls: `wd-urgency-mark wd-u-${urg}` }); setIcon(w, "triangle-alert"); w.setAttr("title", `Urgência: ${urg}`); }
         if (isMd) row.createSpan({ cls: "wd-note-rv " + (rv ? "wd-rv-yes" : "wd-rv-no") }).setAttr("title", rv ? "Revisada" : "Não revisada");
-        if (st !== "cancelled") row.onclick = () => this.app.workspace.getLeaf(false).openFile(f);
+        if (st !== "cancelled") clickable(row, () => this.app.workspace.getLeaf(false).openFile(f));
       }
     }
   }
@@ -2035,10 +2060,12 @@ permissions:
     const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
     const btnDay = ctrls.createSpan({ cls: "wd-view-btn" + (!this.growthCumulative ? " wd-view-active" : ""), text: "dia" });
     btnDay.setAttr("title", "Notas criadas por dia");
-    btnDay.onclick = e => { e.stopPropagation(); this.growthCumulative = false; this.render(); };
+    btnDay.setAttr("aria-pressed", String(!this.growthCumulative));
+    clickable(btnDay, e => { e.stopPropagation(); this.growthCumulative = false; this.render(); });
     const btnCum = ctrls.createSpan({ cls: "wd-view-btn" + (this.growthCumulative ? " wd-view-active" : ""), text: "total" });
     btnCum.setAttr("title", "Total acumulado no período");
-    btnCum.onclick = e => { e.stopPropagation(); this.growthCumulative = true; this.render(); };
+    btnCum.setAttr("aria-pressed", String(this.growthCumulative));
+    clickable(btnCum, e => { e.stopPropagation(); this.growthCumulative = true; this.render(); });
 
     // Notas por data de criação (do cache).
     const counts = this.plugin.getVaultCache().ctimeByDay;
@@ -2100,7 +2127,7 @@ permissions:
     const open = ctrls.createSpan({ cls: "wd-todo-openbtn" });
     setIcon(open, "square-arrow-out-up-right");
     open.setAttr("title", "Abrir a aba do Todoist");
-    open.onclick = e => { e.stopPropagation(); void this.plugin.openTodoist(); };
+    clickable(open, e => { e.stopPropagation(); void this.plugin.openTodoist(); });
     // Lançador de pacotes compacto (some se não houver pacotes).
     this.plugin.todo.renderPackages(sec);
     // Dashboard = só o essencial (Atrasadas · Hoje · Próximos 7). "Depois" fica
@@ -2185,7 +2212,7 @@ permissions:
       const refresh = ctrls.createSpan({ cls: "wd-todo-refresh" + (this.syncLoading ? " wd-spin" : "") });
       setIcon(refresh, "refresh-cw");
       refresh.setAttr("title", "Atualizar estado do Syncthing");
-      refresh.onclick = e => { e.stopPropagation(); void this.fetchSync(true); };
+      clickable(refresh, e => { e.stopPropagation(); void this.fetchSync(true); });
     }
 
     if (!key) {
@@ -2244,17 +2271,17 @@ permissions:
       const row = wrap.createDiv({ cls: "wd-sync-crow" });
       const name = row.createSpan({ cls: "wd-sync-cname", text: f.name });
       name.setAttr("title", "Abrir " + f.path);
-      name.onclick = () => this.app.workspace.getLeaf(false).openFile(f);
+      clickable(name, () => this.app.workspace.getLeaf(false).openFile(f));
       if (this.conflictConfirm === f.path) {
         const yes = row.createSpan({ cls: "wd-sync-cyes", text: "apagar?" });
-        yes.onclick = async () => { await this.app.vault.trash(f, false); this.conflictConfirm = null; this.renderSection("sync"); };
+        clickable(yes, async () => { await this.app.vault.trash(f, false); this.conflictConfirm = null; this.renderSection("sync"); });
         const no = row.createSpan({ cls: "wd-sync-cno", text: "cancelar" });
-        no.onclick = () => { this.conflictConfirm = null; this.renderSection("sync"); };
+        clickable(no, () => { this.conflictConfirm = null; this.renderSection("sync"); });
       } else {
         const del = row.createSpan({ cls: "wd-sync-cdel" });
         setIcon(del, "trash-2");
         del.setAttr("title", "Apagar cópia de conflito (vai para a lixeira)");
-        del.onclick = () => { this.conflictConfirm = f.path; this.renderSection("sync"); };
+        clickable(del, () => { this.conflictConfirm = f.path; this.renderSection("sync"); });
       }
     }
   }
@@ -2692,7 +2719,8 @@ class TaskFormModal extends Modal {
         const meta = TODOIST_PRI[api];
         const b = prow.createSpan({ cls: "wd-tf-pri" + (this.v.priority === api ? " wd-on" : ""), text: meta.label });
         b.style.setProperty("--pri", meta.color);
-        b.onclick = () => { this.v.priority = api; renderPri(); };
+        b.setAttr("aria-pressed", String(this.v.priority === api));
+        clickable(b, () => { this.v.priority = api; renderPri(); });
       }
     };
     renderPri();
@@ -2728,11 +2756,12 @@ class TaskFormModal extends Modal {
           const chip = lwrap.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : "") });
           chip.createSpan({ cls: "wd-label-dot" }).style.background = this.opts.labelColor(l);
           chip.createSpan({ text: `@${l}` });
-          chip.onclick = () => {
+          chip.setAttr("aria-pressed", String(on));
+          clickable(chip, () => {
             const i = this.v.labels.indexOf(l);
             if (i >= 0) this.v.labels.splice(i, 1); else this.v.labels.push(l);
             renderLabels();
-          };
+          });
         }
       };
       renderLabels();
@@ -2944,9 +2973,10 @@ class WerusSettingTab extends PluginSettingTab {
           for (const l of this.labels!) {
             const on = (pkg.labels ?? []).includes(l.name);
             const chip = chips.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : "") });
+            chip.setAttr("aria-pressed", String(on));
             chip.createSpan({ cls: "wd-label-dot" }).style.background = TODOIST_COLORS[l.color] ?? LABEL_FALLBACK;
             chip.createSpan({ text: `@${l.name}` });
-            chip.onclick = async () => {
+            clickable(chip, async () => {
               const cur = pkg.labels ?? [];
               const i = cur.indexOf(l.name);
               if (i >= 0) cur.splice(i, 1); else cur.push(l.name);
@@ -2955,7 +2985,7 @@ class WerusSettingTab extends PluginSettingTab {
               plugin.rerenderDashboards();
               render();
               refresh();
-            };
+            });
           }
         };
         render();
@@ -2994,9 +3024,9 @@ class WerusSettingTab extends PluginSettingTab {
         else iconBtn.createSpan({ cls: "wd-pkg-ico-empty", text: "+" });
       };
       fillIcon();
-      iconBtn.onclick = () => openIconPopover(iconBtn, pkg.icon, async ic => {
+      clickable(iconBtn, () => openIconPopover(iconBtn, pkg.icon, async ic => {
         pkg.icon = ic; await plugin.saveSettings(); plugin.rerenderDashboards(); fillIcon();
-      });
+      }));
 
       // Nome.
       const name = row.createEl("input", { cls: "wd-pkg-name-input", attr: { type: "text", placeholder: "Nome do pacote" } });
@@ -3041,18 +3071,18 @@ class WerusSettingTab extends PluginSettingTab {
       // Reordenar / remover.
       const up = row.createSpan({ cls: "wd-pkg-mini" + (idx === 0 ? " wd-disabled" : "") });
       setIcon(up, "chevron-up"); up.setAttr("title", "Mover para cima");
-      if (idx > 0) up.onclick = async () => { await plugin.movePackage(idx, -1); this.display(); };
+      if (idx > 0) clickable(up, async () => { await plugin.movePackage(idx, -1); this.display(); });
       const down = row.createSpan({ cls: "wd-pkg-mini" + (idx === pkgs.length - 1 ? " wd-disabled" : "") });
       setIcon(down, "chevron-down"); down.setAttr("title", "Mover para baixo");
-      if (idx < pkgs.length - 1) down.onclick = async () => { await plugin.movePackage(idx, +1); this.display(); };
+      if (idx < pkgs.length - 1) clickable(down, async () => { await plugin.movePackage(idx, +1); this.display(); });
       const del = row.createSpan({ cls: "wd-pkg-mini wd-pkg-del" });
       setIcon(del, "trash-2"); del.setAttr("title", "Remover pacote");
-      del.onclick = async () => {
+      clickable(del, async () => {
         plugin.settings.taskPackages = pkgs.filter(x => x !== pkg);
         await plugin.saveSettings();
         plugin.rerenderDashboards();
         this.display();
-      };
+      });
     });
 
     new Setting(containerEl)

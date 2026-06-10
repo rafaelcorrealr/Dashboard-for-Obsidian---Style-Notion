@@ -6,6 +6,14 @@
 
 ---
 
+## [0.12.12] — alpha — 2026-06-10
+
+**Saúde técnica (acessibilidade) — fecha o refactor.**
+
+- Todos os elementos clicáveis (cards de pasta, linhas de nota, tarefas, chips, pílulas do calendário, botões de ícone, baldes recolhíveis…) agora são **acessíveis por teclado**: ganham foco com **Tab** e ativam com **Enter/Espaço** (antes eram `div`/`span` só com clique de mouse).
+- O **anel de foco** é discreto e só aparece na navegação por **teclado** (`:focus-visible`) — não polui o uso com mouse, preservando o visual limpo.
+- Estados de seleção/abertura expostos a leitores de tela (`aria-pressed`/`aria-expanded`). Com isso o **refactor de saúde técnica (§1–§5 + polimento) está concluído**.
+
 ## [0.12.11] — alpha — 2026-06-10
 
 **Saúde técnica — polimento (baixo risco).**
