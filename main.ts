@@ -725,6 +725,7 @@ class TodoistController {
   private error: string | null = null;
   private fetchedAt = 0;
   private laterOpen = false;
+  private noDateOpen = false;
   private filterOpen = false;
   private tip: HTMLElement | null = null;
   private launching = new Set<string>();   // ids de pacotes sendo lançados (anti clique-duplo)
@@ -1148,9 +1149,10 @@ class TodoistController {
     const todayTasks: TodoistTask[] = [];
     const byDay: Record<string, TodoistTask[]> = {};
     const later: TodoistTask[] = [];
+    const noDate: TodoistTask[] = [];
     for (const t of tasks) {
       const dk = dueKey(t);
-      if (!dk) continue;
+      if (!dk) { noDate.push(t); continue; }
       if (dk < todayK) overdue.push(t);
       else if (dk === todayK) todayTasks.push(t);
       else if (dk <= lastK) (byDay[dk] ??= []).push(t);
@@ -1163,13 +1165,21 @@ class TodoistController {
       if (da !== db) return da < db ? -1 : 1;
       return b.priority - a.priority;
     };
-    overdue.sort(byPri); todayTasks.sort(byPri); later.sort(byDateThenPri);
+    overdue.sort(byPri); todayTasks.sort(byPri); later.sort(byDateThenPri); noDate.sort(byPri);
     for (const k of Object.keys(byDay)) byDay[k].sort(byPri);
 
-    const visible = overdue.length + todayTasks.length + later.length + Object.values(byDay).reduce((s, a) => s + a.length, 0);
+    // "Depois" e "Sem data" só aparecem na aba dedicada (showLater !== false).
+    const showExtra = opts.showLater !== false;
+    const visible = overdue.length + todayTasks.length + later.length
+      + Object.values(byDay).reduce((s, a) => s + a.length, 0)
+      + (showExtra ? noDate.length : 0);
     if (visible === 0) {
-      const all = this.tasks.length;
-      body.createDiv({ cls: "wd-empty", text: all ? "Nenhuma tarefa bate com os filtros." : "Nenhuma tarefa com data no Todoist. 🎉" });
+      const f = this.plugin.settings.todoistFilters;
+      const filtered = !!(f.projects.length || f.labels.length);
+      const msg = filtered ? "Nenhuma tarefa bate com os filtros."
+        : showExtra ? "Nenhuma tarefa no Todoist. 🎉"
+        : "Nenhuma tarefa agendada. 🎉";
+      body.createDiv({ cls: "wd-empty", text: msg });
       return;
     }
 
@@ -1222,7 +1232,7 @@ class TodoistController {
       ubody.createDiv({ cls: "wd-todo-boxempty", text: `Nada nos próximos ${range} dias.` });
     }
 
-    if (later.length && opts.showLater !== false) {
+    if (later.length && showExtra) {
       const panel = body.createDiv({ cls: "wd-todo-later" });
       const lhd = panel.createDiv({ cls: "wd-todo-ohd" });
       lhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
@@ -1232,6 +1242,19 @@ class TodoistController {
       if (this.laterOpen) {
         const list = panel.createDiv({ cls: "wd-todo-olist" });
         for (const t of later) this.todoRow(list, t);
+      }
+    }
+
+    if (noDate.length && showExtra) {
+      const panel = body.createDiv({ cls: "wd-todo-later wd-todo-nodate" });
+      const nhd = panel.createDiv({ cls: "wd-todo-ohd" });
+      nhd.createSpan({ cls: "wd-todo-laterico", text: "›" });
+      nhd.createSpan({ cls: "wd-todo-otitle", text: `Sem data (${noDate.length})` });
+      nhd.createSpan({ cls: "wd-todo-otoggle", text: this.noDateOpen ? "ocultar ▾" : "mostrar ›" });
+      nhd.onclick = () => { this.noDateOpen = !this.noDateOpen; this.rerenderAll(); };
+      if (this.noDateOpen) {
+        const list = panel.createDiv({ cls: "wd-todo-olist" });
+        for (const t of noDate) this.todoRow(list, t);
       }
     }
   }

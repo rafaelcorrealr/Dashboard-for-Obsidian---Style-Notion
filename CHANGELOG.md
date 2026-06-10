@@ -6,6 +6,13 @@
 
 ---
 
+## [0.12.9] — alpha — 2026-06-10
+
+**Saúde técnica (§4): balde "Sem data" no Todoist.**
+
+- Tarefas do Todoist **sem data** eram descartadas na montagem da lista → ficavam invisíveis no plugin. Agora aparecem num balde recolhível **"Sem data"** (tom neutro, abaixo de "Depois"), na **aba dedicada** do Todoist. Clique na tarefa para abrir/editar e dar uma data.
+- O dashboard enxuto continua só com o que tem data (Atrasadas / Hoje / Próximos N dias). O balde respeita os filtros de projeto/etiqueta.
+
 ## [0.12.8] — alpha — 2026-06-10
 
 **Saúde técnica (§3): uma passada do cofre, cacheada.** (Refactor de performance, sem mudança visível.)

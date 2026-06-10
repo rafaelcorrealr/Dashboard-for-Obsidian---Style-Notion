@@ -1524,6 +1524,10 @@ body {
 }
 .wd-todo-laterico { color: var(--wd-text-faint); font-weight: 700; }
 
+/* Balde "Sem data": tom neutro (parqueado), não o vermelho do "Depois". */
+.wd-todo-nodate .wd-todo-otitle { color: var(--wd-text-muted); }
+.wd-todo-nodate .wd-todo-ohd:hover { background: var(--wd-fill); }
+
 .wd-compact .wd-todo-col { min-height: 64px; padding: 6px 4px; }
 .wd-compact .wd-todo-chip { font-size: 8px; }
 
