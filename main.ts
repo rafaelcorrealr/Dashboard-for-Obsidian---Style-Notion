@@ -3,6 +3,13 @@ import { App, Component, ItemView, MarkdownRenderer, Modal, Notice, Platform, Pl
 const VIEW_TYPE = "werus-dashboard";
 const TODOIST_VIEW_TYPE = "werus-todoist";
 
+// Chaves do localStorage (POR-DISPOSITIVO, não sincronizam): credenciais do
+// Syncthing. Ficam fora do data.json porque a API key/URL são de cada máquina
+// (o data.json viaja pelo Syncthing → a key de uma daria 403 na outra).
+const LS_ST_URL = "werus-dashboard:syncthingUrl";
+const LS_ST_KEY = "werus-dashboard:syncthingApiKey";
+const LS_ST_FOLDER = "werus-dashboard:syncthingFolderId";
+
 // uid curto e estável (pacotes de tarefas).
 function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
@@ -2242,6 +2249,7 @@ export default class WerusDashboard extends Plugin {
 
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    let needStMigration = false;   // credenciais Syncthing migrando data.json → localStorage
     // Saneamento: sectionOrder com exatamente as seções válidas, sem duplicatas.
     const valid: SectionId[] = ["stats", "todoist", "para", "sync", "heatmap", "growth", "calendar"];
     const seen = new Set<SectionId>();
@@ -2267,11 +2275,21 @@ export default class WerusDashboard extends Plugin {
     // Exibição nas linhas (v0.8.0).
     this.settings.todoistShowProject = this.settings.todoistShowProject !== false;
     this.settings.todoistShowLabels = this.settings.todoistShowLabels === true;
-    // Syncthing (v0.10.0).
-    if (typeof this.settings.syncthingUrl !== "string" || !this.settings.syncthingUrl.trim())
-      this.settings.syncthingUrl = "http://127.0.0.1:8384";
-    if (typeof this.settings.syncthingApiKey !== "string") this.settings.syncthingApiKey = "";
-    if (typeof this.settings.syncthingFolderId !== "string") this.settings.syncthingFolderId = "";
+    // Syncthing (v0.10.0) — credenciais são POR-DISPOSITIVO: vivem no localStorage
+    // (não sincronizam pelo data.json). Migração (1x): se o localStorage ainda não
+    // tem, herda o valor que estava no data.json e regrava (ver fim do método).
+    const lsGet = (k: string): string | null => {
+      const v = this.app.loadLocalStorage(k);
+      return typeof v === "string" ? v : null;
+    };
+    const dataUrl = typeof this.settings.syncthingUrl === "string" && this.settings.syncthingUrl.trim()
+      ? this.settings.syncthingUrl : "http://127.0.0.1:8384";
+    const dataKey = typeof this.settings.syncthingApiKey === "string" ? this.settings.syncthingApiKey : "";
+    const dataFolder = typeof this.settings.syncthingFolderId === "string" ? this.settings.syncthingFolderId : "";
+    needStMigration = lsGet(LS_ST_URL) === null && lsGet(LS_ST_KEY) === null && lsGet(LS_ST_FOLDER) === null;
+    this.settings.syncthingUrl = lsGet(LS_ST_URL) ?? dataUrl;
+    this.settings.syncthingApiKey = lsGet(LS_ST_KEY) ?? dataKey;
+    this.settings.syncthingFolderId = lsGet(LS_ST_FOLDER) ?? dataFolder;
     this.settings.syncthingShowCounts = this.settings.syncthingShowCounts === true;
     // Pacotes de tarefas (v0.12.0).
     const tp = this.settings.taskPackages;
@@ -2287,9 +2305,23 @@ export default class WerusDashboard extends Plugin {
       : [];
     this.settings.packageConfirm = ["always", "many", "never"].includes(this.settings.packageConfirm)
       ? this.settings.packageConfirm : "many";
+
+    // Migração 1x: grava as credenciais no localStorage e as remove do data.json.
+    if (needStMigration) await this.saveSettings();
   }
 
-  async saveSettings() { await this.saveData(this.settings); }
+  async saveSettings() {
+    // Credenciais do Syncthing são por-dispositivo → localStorage (não sincroniza).
+    this.app.saveLocalStorage(LS_ST_URL, this.settings.syncthingUrl);
+    this.app.saveLocalStorage(LS_ST_KEY, this.settings.syncthingApiKey);
+    this.app.saveLocalStorage(LS_ST_FOLDER, this.settings.syncthingFolderId);
+    // O data.json (sincronizado pelo Syncthing) NÃO leva as credenciais.
+    const shared: Partial<DashSettings> = { ...this.settings };
+    delete shared.syncthingUrl;
+    delete shared.syncthingApiKey;
+    delete shared.syncthingFolderId;
+    await this.saveData(shared);
+  }
 
   async open() {
     const { workspace } = this.app;
@@ -2950,6 +2982,10 @@ class WerusSettingTab extends PluginSettingTab {
         }));
 
     containerEl.createEl("h3", { text: "Sincronização (Syncthing)" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Estas credenciais são guardadas por dispositivo (localStorage) — cada máquina tem a sua e elas não sincronizam pelo Syncthing nem vão para o Git.",
+    });
 
     new Setting(containerEl)
       .setName("URL da API")
@@ -2967,7 +3003,7 @@ class WerusSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName("API key")
-      .setDesc("Syncthing → Actions → Settings → API Key. Salva localmente em data.json (não vai para o Git).")
+      .setDesc("Syncthing → Actions → Settings → API Key. Guardada por dispositivo (localStorage), não vai para o data.json/Git.")
       .addText(t => {
         t.setPlaceholder("cole a API key")
           .setValue(this.plugin.settings.syncthingApiKey)

@@ -6,6 +6,14 @@
 
 ---
 
+## [0.12.6] — alpha — 2026-06-10
+
+**Saúde técnica (§1 da revisão): credenciais do Syncthing por dispositivo.**
+
+- URL, API key e ID da pasta do Syncthing saíram do `data.json` e passaram a ser guardadas **por dispositivo** (localStorage). Como o `data.json` sincroniza pelo próprio Syncthing, a API key de uma máquina ia para a outra e dava **403** (a key é única por aparelho).
+- **Migração automática (1x):** herda o valor atual do `data.json` e regrava no armazenamento local; nada se perde.
+- Token do Todoist, pacotes, fontes e ordem/visibilidade das seções seguem sincronizando pelo `data.json`.
+
 ## [0.12.5] — alpha — 2026-06-10
 
 **Configurações de Pacotes em uma linha.**
