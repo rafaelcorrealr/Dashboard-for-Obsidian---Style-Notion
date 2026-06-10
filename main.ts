@@ -9,6 +9,8 @@ const TODOIST_VIEW_TYPE = "werus-todoist";
 const LS_ST_URL = "werus-dashboard:syncthingUrl";
 const LS_ST_KEY = "werus-dashboard:syncthingApiKey";
 const LS_ST_FOLDER = "werus-dashboard:syncthingFolderId";
+const LS_TODO_CACHE = "werus-dashboard:todoistCache";   // cache offline do Todoist (por-dispositivo)
+const TODO_TTL = 5 * 60 * 1000;                          // idade máx. do cache antes de re-buscar (5 min)
 
 // uid curto e estável (pacotes de tarefas).
 function uid(): string {
@@ -735,7 +737,9 @@ class TodoistController {
     private app: App,
     private plugin: WerusDashboard,
     private component: Component,
-  ) {}
+  ) {
+    this.loadCache();   // mostra o último resultado na hora (offline), antes do 1º fetch
+  }
 
   // Inscreve uma view; devolve a função de cancelar. O callback re-renderiza só a
   // seção Todoist daquela view (não a view inteira). Estado é único e compartilhado.
@@ -930,6 +934,7 @@ class TodoistController {
     this.rerenderAll();
     try {
       await deleteTodoistTask(token, t.id);
+      this.persistCache();
       new Notice(`🗑 Excluída: ${t.content}`);
       return true;
     } catch (e) {
@@ -948,11 +953,55 @@ class TodoistController {
     this.rerenderAll();
     try {
       await closeTodoistTask(token, t.id);
+      this.persistCache();
       new Notice(`✓ Concluída: ${t.content}`);
     } catch (e) {
       if (idx >= 0) this.tasks.splice(idx, 0, t);
       new Notice(`Falha ao concluir: ${e instanceof Error ? e.message : String(e)}`);
       this.rerenderAll();
+    }
+  }
+
+  private isStale(): boolean { return Date.now() - this.fetchedAt >= TODO_TTL; }
+
+  // Auto-refresh periódico (intervalo no onload): só busca se há view aberta, token
+  // configurado, nada em voo e o cache passou do TTL. Sem view aberta = sem chamada à API.
+  maybeRefresh() {
+    if (!this.subs.size || this.loading) return;
+    if (!this.plugin.settings.todoistToken.trim()) return;
+    if (this.isStale()) void this.fetch(false);
+  }
+
+  // Cache offline (por-dispositivo, localStorage → não sincroniza): carrega o último
+  // resultado para a aba abrir já com as tarefas, mesmo sem internet.
+  private loadCache() {
+    try {
+      const raw = this.app.loadLocalStorage(LS_TODO_CACHE);
+      const c = typeof raw === "string" ? JSON.parse(raw) : raw;
+      if (!c || !Array.isArray(c.tasks)) return;
+      this.tasks = c.tasks;
+      this.projects = Array.isArray(c.projects) ? c.projects : [];
+      this.projectMap = new Map(this.projects.map((p: TodoistProject) => [p.id, p.name]));
+      this.labelColors = new Map(Array.isArray(c.labels) ? c.labels : []);
+      this.fetchedAt = typeof c.fetchedAt === "number" ? c.fetchedAt : 0;
+    } catch { /* cache ausente/corrompido → ignora */ }
+  }
+
+  private persistCache() {
+    try {
+      this.app.saveLocalStorage(LS_TODO_CACHE, JSON.stringify({
+        tasks: this.tasks, projects: this.projects, labels: [...this.labelColors], fetchedAt: this.fetchedAt,
+      }));
+    } catch { /* serialização/quota → ignora */ }
+  }
+
+  // Aviso de frescor no topo da lista: durante uma busca, ou quando estamos
+  // exibindo o cache porque a última busca falhou (offline).
+  private renderFreshness(host: HTMLElement) {
+    if (this.loading) { host.createDiv({ cls: "wd-todo-fresh", text: "Atualizando…" }); return; }
+    if (this.error) {
+      const when = this.fetchedAt ? relTime(new Date(this.fetchedAt).toISOString()) : "—";
+      host.createDiv({ cls: "wd-todo-fresh wd-todo-fresh-stale", text: `Sem conexão — exibindo o último carregado (${when})` });
     }
   }
 
@@ -973,6 +1022,7 @@ class TodoistController {
       this.projectMap = new Map(projects.map(p => [p.id, p.name]));
       this.labelColors = new Map(labels.map(l => [l.name, TODOIST_COLORS[l.color] ?? LABEL_FALLBACK]));
       this.fetchedAt = Date.now();
+      this.persistCache();
     } catch (e) {
       this.error = e instanceof Error ? e.message : String(e);
     } finally {
@@ -1132,9 +1182,14 @@ class TodoistController {
       return;
     }
 
-    if (!this.fetchedAt && !this.loading && !this.error) void this.fetch(false);
-    if (this.error) { body.createDiv({ cls: "wd-empty wd-todo-error", text: `Erro ao buscar tarefas: ${this.error}` }); return; }
-    if (!this.fetchedAt) { body.createDiv({ cls: "wd-empty", text: "Carregando tarefas…" }); return; }
+    // Auto-fetch: nunca buscou, ou o cache passou do TTL. Erro não dispara re-tentativa
+    // automática aqui (evitaria loop a cada render); o intervalo e o botão ↻ cuidam disso.
+    if (!this.loading && !this.error && (!this.fetchedAt || this.isStale())) void this.fetch(false);
+    const hasCache = this.tasks.length > 0;
+    // Erro/carregando só ocupam a área toda quando NÃO há cache para mostrar (offline-friendly).
+    if (this.error && !hasCache) { body.createDiv({ cls: "wd-empty wd-todo-error", text: `Erro ao buscar tarefas: ${this.error}` }); return; }
+    if (!this.fetchedAt && !hasCache) { body.createDiv({ cls: "wd-empty", text: "Carregando tarefas…" }); return; }
+    this.renderFreshness(body);
 
     if (this.filterOpen) this.renderFilterBar(body);
 
@@ -2227,6 +2282,9 @@ export default class WerusDashboard extends Plugin {
   async onload() {
     await this.loadSettings();
     this.todo = new TodoistController(this.app, this, this);
+    // Auto-refresh do Todoist: verifica a cada minuto; só busca se há view aberta e o
+    // cache passou do TTL (5 min). registerInterval limpa o timer no unload.
+    this.registerInterval(window.setInterval(() => this.todo.maybeRefresh(), 60_000));
     this.registerView(VIEW_TYPE, leaf => new DashboardView(leaf, this));
     this.registerView(TODOIST_VIEW_TYPE, leaf => new TodoistView(leaf, this));
     this.addRibbonIcon("layout-dashboard", "Abrir Werus Dashboard", () => this.open());

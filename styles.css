@@ -1190,6 +1190,9 @@ body {
 }
 .wd-todo-row-date { font-family: var(--font-monospace, monospace); font-size: 10px; color: var(--wd-text-faint); flex-shrink: 0; }
 .wd-todo-error { color: #d88; }
+/* Aviso de frescor do Todoist (§5): "Atualizando…" / cache offline. */
+.wd-todo-fresh { font-size: 10px; color: var(--wd-text-faint); padding: 2px 4px 6px; letter-spacing: .3px; }
+.wd-todo-fresh-stale { color: #d8a060; }
 
 /* ── v0.7.0 — Controles do header (toggle 3/7 + filtros) ─────────────────── */
 .wd-todo-range { display: inline-flex; border: 1px solid var(--wd-border); border-radius: 6px; overflow: hidden; }

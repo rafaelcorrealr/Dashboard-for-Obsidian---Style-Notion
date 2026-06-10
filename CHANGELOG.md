@@ -6,6 +6,13 @@
 
 ---
 
+## [0.12.10] — alpha — 2026-06-10
+
+**Saúde técnica (§5): auto-refresh + cache offline do Todoist.**
+
+- **Cache offline:** o último resultado do Todoist fica guardado **no dispositivo** (localStorage, não sincroniza pelo Syncthing). Ao abrir o Obsidian a aba já mostra suas tarefas na hora — **mesmo sem internet** — e a API só atualiza por cima. Se a busca falhar offline, aparece um aviso discreto "Sem conexão — exibindo o último carregado (há X)" em vez de uma tela de erro.
+- **Auto-refresh:** as tarefas se atualizam sozinhas a cada ~5 min enquanto houver uma aba aberta (antes só atualizava ao abrir ou no botão ↻). Sem nenhuma aba aberta, nenhuma chamada à API.
+
 ## [0.12.9] — alpha — 2026-06-10
 
 **Saúde técnica (§4): balde "Sem data" no Todoist.**
