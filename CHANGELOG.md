@@ -6,6 +6,39 @@
 
 ---
 
+## [0.12.5] — alpha — 2026-06-10
+
+**Configurações de Pacotes em uma linha.**
+
+- Cada pacote ocupa agora **uma única linha**: ícone · nome · projeto · Etiquetas · Tarefas · ▲▼ · 🗑. Antes cada pacote empilhava 4 blocos (linha + textarea + ícone + etiquetas).
+- **Etiquetas** e **Tarefas** viraram botões que abrem um **popover** só quando se vai configurar (igual ao ícone); o botão mostra a contagem. Helper genérico `openPopover()`.
+- A textarea de tarefas salva ao digitar e re-renderiza os pacotes na aba/dashboard ao fechar (clicar fora / Esc).
+
+## [0.12.4] — alpha — 2026-06-10
+
+**Seletor de ícone mais discreto.**
+
+- A paleta de ícones do pacote (sempre aberta) virou um **botão pequeno** com o ícone atual; clicar abre um **popover flutuante** com as opções, por cima da página. Fecha ao escolher, clicar fora ou Esc.
+
+## [0.12.3] — alpha — 2026-06-10
+
+**Ajustes nos Pacotes (continuação).**
+
+- **Confirmação configurável** (*Configurações → Pacotes → "Confirmar antes de lançar"*): **Sempre** (até para 1 tarefa — bom para testar), **Só muitas (> 5 tarefas)** (padrão) e **Nunca**.
+- **Etiquetas no preview:** a confirmação lista cada tarefa com as etiquetas que vai receber (bolinha colorida + `@nome`).
+- **Etiqueta inline por tarefa:** `@etiqueta` numa linha aplica a etiqueta só àquela tarefa (além das do pacote); o `@` sai do título (estilo Quick Add) e vira etiqueta de verdade.
+- **Seletor visual de ícone:** o campo de texto livre virou uma paleta clicável de ícones (Lucide) + "sem ícone".
+
+## [0.12.2] — alpha — 2026-06-09
+
+**Refinos dos Pacotes de tarefas.**
+
+- **Etiquetas por pacote na UI:** seletor de etiquetas (chips com a cor do Todoist) em cada pacote — as tarefas saem já etiquetadas.
+- **Reordenar pacotes** com ▲▼ nas Configurações.
+- **Anti-duplicação:** o botão trava enquanto lança (mostra "…" e pulsa) — clique-duplo não cria tarefas em dobro.
+- **Confirmação para muitas tarefas:** pacotes com mais de 5 tarefas pedem confirmação (com a lista) antes de criar.
+- **Lançador no dashboard:** os botões de pacote aparecem também no topo da seção TAREFAS do dashboard (somem quando não há pacotes).
+
 ## [0.12.1] — alpha — 2026-06-08
 
 **Separação dashboard × aba do Todoist** (mesmo código, comportamentos diferentes).

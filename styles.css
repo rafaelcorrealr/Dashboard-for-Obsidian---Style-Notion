@@ -1754,14 +1754,150 @@ body {
 }
 .wd-pkg-disabled { opacity: 0.45; cursor: default; }
 .wd-pkg-disabled:hover { border-color: var(--wd-border); background: var(--wd-surface); }
+.wd-pkg-busy { cursor: progress; animation: wd-pkg-pulse 1s ease-in-out infinite; }
+@keyframes wd-pkg-pulse { 0%, 100% { opacity: 0.45; } 50% { opacity: 0.75; } }
 
-/* Configurações: editor de tarefas de um pacote */
-.wd-pkg-setting { border-top: 1px solid var(--wd-border); padding-top: 12px; }
+/* Lançador compacto no dashboard (dentro da seção TAREFAS) */
+.wd-todo-section > .wd-pkg-bar { margin-bottom: 12px; }
+
+/* Configurações: uma linha por pacote */
+.wd-pkg-list { margin: 8px 0 4px; }
+.wd-pkg-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 0;
+  border-top: 1px solid var(--wd-border);
+}
+.wd-pkg-row:first-child { border-top: none; }
+.wd-pkg-name-input {
+  flex: 1;
+  min-width: 70px;
+  border: 1px solid var(--wd-border);
+  background: var(--wd-surface);
+  border-radius: 7px;
+  padding: 5px 8px;
+  color: var(--wd-text);
+  font-size: 13px;
+}
+.wd-pkg-name-input:focus { border-color: var(--wd-accent); outline: none; }
+.wd-pkg-proj {
+  max-width: 130px;
+  font-size: 12px;
+  text-overflow: ellipsis;
+}
+.wd-pkg-chip-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 5px 9px;
+  border-radius: 7px;
+  border: 1px solid var(--wd-border);
+  background: var(--wd-surface);
+  color: var(--wd-text);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.wd-pkg-chip-btn:hover { border-color: var(--wd-accent); }
+.wd-pkg-btn-ico { display: inline-flex; color: var(--wd-text-muted); }
+.wd-pkg-btn-ico svg { width: 14px; height: 14px; }
+.wd-pkg-mini {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 6px;
+  cursor: pointer;
+  color: var(--wd-text-muted);
+}
+.wd-pkg-mini:hover { background: var(--wd-fill); color: var(--wd-text); }
+.wd-pkg-mini svg { width: 15px; height: 15px; }
+.wd-pkg-mini.wd-disabled { opacity: 0.35; cursor: default; pointer-events: none; }
+.wd-pkg-del:hover { color: var(--text-error); }
+
+/* Trigger discreto do seletor de ícone (abre o popover) */
+.wd-pkg-icontrigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 30px;
+  height: 30px;
+  padding: 3px 6px;
+  border-radius: 7px;
+  border: 1px solid var(--wd-border);
+  background: var(--wd-surface);
+  color: var(--wd-text);
+  cursor: pointer;
+}
+.wd-pkg-icontrigger:hover { border-color: var(--wd-accent); }
+.wd-pkg-icontrigger .wd-pkg-ico svg { width: 16px; height: 16px; }
+.wd-pkg-ico-empty { color: var(--wd-text-faint); font-size: 15px; line-height: 1; }
+
+/* Textarea de tarefas (dentro do popover) */
 .wd-pkg-tasks {
   width: 100%;
   box-sizing: border-box;
-  margin: 0 0 14px;
+  margin: 0;
   font-family: var(--font-monospace, monospace);
   font-size: 12px;
   resize: vertical;
+}
+
+/* Popover flutuante genérico + variantes */
+.wd-pop {
+  position: fixed;
+  z-index: var(--layer-menu, 9999);
+  padding: 8px;
+  border-radius: 9px;
+  border: 1px solid var(--wd-border);
+  background: var(--background-secondary, var(--wd-surface));
+  box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28);
+}
+.wd-pop-title {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--wd-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 6px;
+}
+.wd-icon-pop { display: flex; flex-wrap: wrap; gap: 4px; max-width: 244px; }
+.wd-pop-labels { max-width: 260px; }
+.wd-pop-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.wd-pkg-iconopt {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 7px;
+  cursor: pointer;
+  border: 1px solid var(--wd-border);
+  background: var(--wd-surface);
+  color: var(--wd-text-muted);
+}
+.wd-pkg-iconopt svg { width: 16px; height: 16px; }
+.wd-pkg-iconopt:hover { border-color: var(--wd-accent); color: var(--wd-text); }
+.wd-pkg-iconopt.wd-on { border-color: var(--wd-accent); color: var(--wd-accent); background: var(--wd-fill); }
+.wd-pkg-iconnone { font-size: 14px; }
+
+/* Modal de confirmação genérico */
+.wd-confirm-list {
+  margin: 8px 0 4px;
+  padding-left: 20px;
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 13px;
+  color: var(--wd-text);
+}
+.wd-confirm-list li { margin: 4px 0; }
+.wd-confirm-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  margin-left: 6px;
+  font-size: 11px;
+  color: var(--wd-text-muted);
 }

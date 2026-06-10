@@ -51,6 +51,7 @@ interface DashSettings {
   syncthingFolderId: string;     // id da pasta; vazio = autodetecta
   syncthingShowCounts: boolean;  // mostrar "sincronizados / total" de itens por aparelho
   taskPackages: TaskPackage[];   // pacotes de tarefas (lançar no Todoist)
+  packageConfirm: "always" | "many" | "never";   // quando pedir confirmação ao lançar
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
@@ -72,6 +73,7 @@ const DEFAULT_SETTINGS: DashSettings = {
   syncthingFolderId: "",
   syncthingShowCounts: false,
   taskPackages: [],
+  packageConfirm: "many",
 };
 
 interface ParaSection {
@@ -159,6 +161,85 @@ const TODOIST_COLORS: Record<string, string> = {
   salmon: "#FF8D85", charcoal: "#808080", grey: "#B8B8B8", taupe: "#CCAC93",
 };
 const LABEL_FALLBACK = "#B8B8B8";
+// No modo "many", lançar mais que isto pede confirmação.
+const LAUNCH_CONFIRM_MIN = 5;
+
+// Ícones sugeridos para os pacotes (nomes Lucide; renderizados por renderIcon).
+const PKG_ICONS = [
+  "sunrise", "sun", "sunset", "moon", "coffee", "utensils", "dumbbell", "book-open",
+  "briefcase", "graduation-cap", "home", "shopping-cart", "heart", "droplet", "pill",
+  "bed", "clock", "calendar", "check-check", "list-checks", "target", "flame", "zap",
+  "star", "sparkles", "rocket", "brush", "music", "gamepad-2", "dog",
+];
+
+// Separa as etiquetas inline (@etiqueta) do texto de uma linha de tarefa.
+// Devolve o título limpo (estilo Quick Add do Todoist) + etiquetas combinadas
+// (as do pacote primeiro, depois as inline, sem duplicar).
+function splitTaskLabels(line: string, pkgLabels: string[] = []): { title: string; labels: string[] } {
+  const inline: string[] = [];
+  const stripped = line.replace(/@([\p{L}\p{N}_]+)/gu, (_m, name: string) => { inline.push(name); return ""; })
+    .replace(/\s{2,}/g, " ").trim();
+  const title = stripped || line.trim();
+  const labels = [...new Set([...pkgLabels, ...inline])];
+  return { title, labels };
+}
+
+// Popover flutuante genérico, ancorado num elemento. `fill(body, close)` monta o
+// conteúdo. Fecha ao clicar fora ou Escape (opts.onClose roda antes de remover).
+function openPopover(
+  anchor: HTMLElement,
+  fill: (body: HTMLElement, close: () => void) => void,
+  opts: { cls?: string; width?: number; onClose?: () => void } = {},
+): () => void {
+  document.querySelectorAll(".wd-pop").forEach(e => e.remove());
+  const pop = document.body.createDiv({ cls: "wd-pop" + (opts.cls ? " " + opts.cls : "") });
+  if (opts.width) pop.style.width = `${opts.width}px`;
+
+  const onDoc = (e: MouseEvent) => {
+    const t = e.target as Node;
+    if (!pop.contains(t) && t !== anchor && !anchor.contains(t)) close();
+  };
+  const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") close(); };
+  function close() {
+    opts.onClose?.();
+    pop.remove();
+    document.removeEventListener("mousedown", onDoc, true);
+    document.removeEventListener("keydown", onKey, true);
+  }
+
+  fill(pop, close);
+
+  const r = anchor.getBoundingClientRect();
+  pop.style.top = `${r.bottom + 4}px`;
+  pop.style.left = `${r.left}px`;
+  requestAnimationFrame(() => {
+    const pr = pop.getBoundingClientRect();
+    if (pr.right > window.innerWidth - 8) pop.style.left = `${Math.max(8, window.innerWidth - pr.width - 8)}px`;
+    if (pr.bottom > window.innerHeight - 8) pop.style.top = `${Math.max(8, r.top - pr.height - 4)}px`;
+  });
+
+  // Registra depois do clique de abertura para não fechar imediatamente.
+  setTimeout(() => {
+    document.addEventListener("mousedown", onDoc, true);
+    document.addEventListener("keydown", onKey, true);
+  }, 0);
+  return close;
+}
+
+// Popover de seleção de ícone (paleta). `current` = ícone selecionado (destaca).
+function openIconPopover(anchor: HTMLElement, current: string | undefined, onPick: (icon: string | undefined) => void) {
+  openPopover(anchor, (pop, close) => {
+    const none = pop.createSpan({ cls: "wd-pkg-iconopt wd-pkg-iconnone" + (!current ? " wd-on" : ""), text: "—" });
+    none.setAttr("title", "Sem ícone");
+    none.onclick = () => { onPick(undefined); close(); };
+    for (const ic of PKG_ICONS) {
+      const opt = pop.createSpan({ cls: "wd-pkg-iconopt" + (current === ic ? " wd-on" : "") });
+      renderIcon(opt, ic);
+      opt.setAttr("title", ic);
+      opt.onclick = () => { onPick(ic); close(); };
+    }
+  }, { cls: "wd-icon-pop" });
+}
 
 // Busca as tarefas ativas (não concluídas) via API unificada v1 (a REST v2 foi
 // aposentada → respondia 410). A v1 é paginada: { results, next_cursor }.
@@ -644,6 +725,7 @@ class TodoistController {
   private laterOpen = false;
   private filterOpen = false;
   private tip: HTMLElement | null = null;
+  private launching = new Set<string>();   // ids de pacotes sendo lançados (anti clique-duplo)
 
   constructor(
     private app: App,
@@ -893,23 +975,86 @@ class TodoistController {
   async launchPackage(pkg: TaskPackage) {
     const token = this.plugin.settings.todoistToken.trim();
     if (!token) { new Notice("Configure o token do Todoist nas Configurações."); return; }
-    const lines = pkg.tasks.map(s => s.trim()).filter(Boolean);
-    if (!lines.length) { new Notice("Pacote sem tarefas."); return; }
+    // Resolve título limpo + etiquetas (pacote + inline @etiqueta) por tarefa.
+    const items = pkg.tasks.map(s => s.trim()).filter(Boolean).map(line => splitTaskLabels(line, pkg.labels ?? []));
+    if (!items.length) { new Notice("Pacote sem tarefas."); return; }
+    if (this.launching.has(pkg.id)) return;   // já está lançando → ignora clique-duplo
+
+    // Confirmação conforme a configuração (sempre / só muitas / nunca).
+    const mode = this.plugin.settings.packageConfirm;
+    const needConfirm = mode === "always" || (mode === "many" && items.length > LAUNCH_CONFIRM_MIN);
+    if (needConfirm) {
+      const ok = await confirmModal(this.app, {
+        title: `Lançar “${pkg.name || "pacote"}”?`,
+        body: `Isso vai criar ${items.length} tarefa(s) no Todoist com data de hoje:`,
+        items: items.map(it => ({
+          text: it.title,
+          labels: it.labels.map(n => ({ name: n, color: this.labelColor(n) })),
+        })),
+        cta: `Lançar ${items.length}`,
+      });
+      if (!ok) return;
+    }
+
+    this.launching.add(pkg.id);
+    this.rerender();   // mostra o botão como "lançando…"
     const due = toKey(new Date());
     let ok = 0;
-    for (const content of lines) {
-      try {
-        const fields: TodoistWrite = { content, due_date: due };
-        if (pkg.projectId) fields.project_id = pkg.projectId;
-        if (pkg.labels?.length) fields.labels = pkg.labels;
-        await createTodoistTask(token, fields);
-        ok++;
-      } catch (e) {
-        new Notice(`Falha em "${content}": ${e instanceof Error ? e.message : String(e)}`);
+    try {
+      for (const { title, labels } of items) {
+        try {
+          const fields: TodoistWrite = { content: title, due_date: due };
+          if (pkg.projectId) fields.project_id = pkg.projectId;
+          if (labels.length) fields.labels = labels;
+          await createTodoistTask(token, fields);
+          ok++;
+        } catch (e) {
+          new Notice(`Falha em "${title}": ${e instanceof Error ? e.message : String(e)}`);
+        }
       }
+    } finally {
+      this.launching.delete(pkg.id);
     }
-    new Notice(`✓ ${ok}/${lines.length} tarefa(s) lançada(s) — ${pkg.name || "pacote"}`);
-    await this.fetch(true);
+    new Notice(`✓ ${ok}/${items.length} tarefa(s) lançada(s) — ${pkg.name || "pacote"}`);
+    await this.fetch(true);   // re-renderiza (limpa o estado "lançando…")
+  }
+
+  // Barra de lançadores de pacotes. Com `heading`, monta a seção "PACOTES"
+  // completa (aba do Todoist); sem ele, só a barra de botões (dashboard, e
+  // some quando não há pacotes para manter o painel enxuto).
+  renderPackages(host: HTMLElement, opts: { heading?: boolean } = {}) {
+    const pkgs = this.plugin.settings.taskPackages;
+    let target = host;
+    if (opts.heading) {
+      const sec = host.createDiv({ cls: "wd-section" });
+      const head = sec.createDiv({ cls: "wd-sec-head" });
+      head.createDiv({ cls: "wd-sec-label", text: "PACOTES" });
+      if (!pkgs.length) {
+        sec.createDiv({ cls: "wd-empty", text: "Crie pacotes em Configurações → Werus Dashboard → Pacotes de tarefas." });
+        return;
+      }
+      target = sec;
+    } else if (!pkgs.length) {
+      return;
+    }
+
+    const token = this.plugin.settings.todoistToken.trim();
+    const bar = target.createDiv({ cls: "wd-pkg-bar" });
+    for (const pkg of pkgs) {
+      const valid = pkg.tasks.filter(s => s.trim()).length;
+      const busy = this.launching.has(pkg.id);
+      const disabled = !token || !valid || busy;
+      const btn = bar.createDiv({ cls: "wd-pkg-btn" + (disabled ? " wd-pkg-disabled" : "") + (busy ? " wd-pkg-busy" : "") });
+      if (pkg.icon) renderIcon(btn.createSpan({ cls: "wd-pkg-ico" }), pkg.icon);
+      btn.createSpan({ cls: "wd-pkg-name", text: pkg.name || "(sem nome)" });
+      btn.createSpan({ cls: "wd-pkg-count", text: busy ? "…" : String(valid) });
+      btn.setAttr("title",
+        busy ? "Lançando…" :
+        !token ? "Configure o token do Todoist" :
+        !valid ? "Pacote sem tarefas" :
+        `Lançar ${valid} tarefa(s) no Todoist (hoje)`);
+      if (!disabled) btn.onclick = () => void this.launchPackage(pkg);
+    }
   }
 
   private renderFilterBar(host: HTMLElement) {
@@ -1850,6 +1995,8 @@ permissions:
     setIcon(open, "square-arrow-out-up-right");
     open.setAttr("title", "Abrir a aba do Todoist");
     open.onclick = e => { e.stopPropagation(); void this.plugin.openTodoist(); };
+    // Lançador de pacotes compacto (some se não houver pacotes).
+    this.todo.renderPackages(sec);
     // Dashboard = só o essencial (Atrasadas · Hoje · Próximos 7). "Depois" fica
     // só na aba do Todoist → recorrentes só aparecem aqui perto do dia.
     this.todo.renderList(sec, ctrls, { showLater: false });
@@ -2084,6 +2231,15 @@ export default class WerusDashboard extends Plugin {
     this.rerenderDashboards();
   }
 
+  async movePackage(index: number, dir: number) {
+    const arr = this.settings.taskPackages;
+    const j = index + dir;
+    if (index < 0 || j < 0 || j >= arr.length) return;
+    [arr[index], arr[j]] = [arr[j], arr[index]];
+    await this.saveSettings();
+    this.rerenderDashboards();
+  }
+
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     // Saneamento: sectionOrder com exatamente as seções válidas, sem duplicatas.
@@ -2129,6 +2285,8 @@ export default class WerusDashboard extends Plugin {
           labels: Array.isArray(p.labels) ? p.labels.filter(x => typeof x === "string") : undefined,
         }))
       : [];
+    this.settings.packageConfirm = ["always", "many", "never"].includes(this.settings.packageConfirm)
+      ? this.settings.packageConfirm : "many";
   }
 
   async saveSettings() { await this.saveData(this.settings); }
@@ -2178,7 +2336,7 @@ class TodoistView extends ItemView {
     txt.createDiv({ cls: "wd-date", text: todayBR() });
     txt.createDiv({ cls: "wd-title", text: "Todoist" });
 
-    this.renderPackages(root);
+    this.todo.renderPackages(root, { heading: true });
 
     const sec = root.createDiv({ cls: "wd-section wd-todo-section" });
     const head = sec.createDiv({ cls: "wd-sec-head" });
@@ -2186,32 +2344,59 @@ class TodoistView extends ItemView {
     const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
     this.todo.renderList(sec, ctrls);
   }
+}
 
-  // Barra de lançadores: um botão por pacote → cria as tarefas no Todoist (hoje).
-  private renderPackages(root: HTMLElement) {
-    const pkgs = this.plugin.settings.taskPackages;
-    const sec = root.createDiv({ cls: "wd-section" });
-    const head = sec.createDiv({ cls: "wd-sec-head" });
-    head.createDiv({ cls: "wd-sec-label", text: "PACOTES" });
+// ── Modal de confirmação genérico (resolve true/false) ───────────────────────
 
-    if (!pkgs.length) {
-      sec.createDiv({ cls: "wd-empty", text: "Crie pacotes em Configurações → Werus Dashboard → Pacotes de tarefas." });
-      return;
-    }
+interface ConfirmItem {
+  text: string;
+  labels?: { name: string; color: string }[];   // chips opcionais (etiquetas)
+}
 
-    const token = this.plugin.settings.todoistToken.trim();
-    const bar = sec.createDiv({ cls: "wd-pkg-bar" });
-    for (const pkg of pkgs) {
-      const valid = pkg.tasks.filter(s => s.trim()).length;
-      const disabled = !token || !valid;
-      const btn = bar.createDiv({ cls: "wd-pkg-btn" + (disabled ? " wd-pkg-disabled" : "") });
-      if (pkg.icon) renderIcon(btn.createSpan({ cls: "wd-pkg-ico" }), pkg.icon);
-      btn.createSpan({ cls: "wd-pkg-name", text: pkg.name || "(sem nome)" });
-      btn.createSpan({ cls: "wd-pkg-count", text: String(valid) });
-      btn.setAttr("title", !token ? "Configure o token do Todoist" : !valid ? "Pacote sem tarefas" : `Lançar ${valid} tarefa(s) no Todoist (hoje)`);
-      if (!disabled) btn.onclick = () => void this.todo.launchPackage(pkg);
-    }
+interface ConfirmOpts {
+  title: string;
+  body: string;
+  items?: ConfirmItem[];   // lista opcional (ex.: tarefas a criar)
+  cta: string;             // rótulo do botão de confirmação
+}
+
+class ConfirmModal extends Modal {
+  private done = false;
+  constructor(app: App, private opts: ConfirmOpts, private resolve: (ok: boolean) => void) {
+    super(app);
   }
+
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.addClass("wd-confirm");
+    contentEl.createEl("h3", { text: this.opts.title });
+    contentEl.createEl("p", { text: this.opts.body });
+    if (this.opts.items?.length) {
+      const ul = contentEl.createEl("ul", { cls: "wd-confirm-list" });
+      for (const it of this.opts.items) {
+        const li = ul.createEl("li");
+        li.createSpan({ text: it.text });
+        for (const l of it.labels ?? []) {
+          const chip = li.createSpan({ cls: "wd-confirm-label" });
+          chip.createSpan({ cls: "wd-label-dot" }).style.background = l.color;
+          chip.createSpan({ text: `@${l.name}` });
+        }
+      }
+    }
+    const actions = contentEl.createDiv({ cls: "wd-tf-actions" });
+    actions.createEl("button", { text: "Cancelar" }).onclick = () => this.close();
+    const ok = actions.createEl("button", { cls: "mod-cta", text: this.opts.cta });
+    ok.onclick = () => { this.done = true; this.close(); };
+  }
+
+  onClose() {
+    this.contentEl.empty();
+    this.resolve(this.done);
+  }
+}
+
+function confirmModal(app: App, opts: ConfirmOpts): Promise<boolean> {
+  return new Promise(resolve => new ConfirmModal(app, opts, resolve).open());
 }
 
 // ── Pop-up de detalhes da tarefa (só leitura; botão Editar abre o formulário) ─
@@ -2451,6 +2636,8 @@ class WerusSettingTab extends PluginSettingTab {
   // Projetos do Todoist (para os dropdowns dos pacotes). Buscados 1x; quando
   // chegam, re-renderiza a aba para preencher os selects.
   private projects: TodoistProject[] | null = null;
+  // Etiquetas do Todoist (chips por pacote). Mesma estratégia: busca 1x.
+  private labels: TodoistLabel[] | null = null;
 
   constructor(app: App, private plugin: WerusDashboard) { super(app, plugin); }
 
@@ -2565,51 +2752,151 @@ class WerusSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Pacotes de tarefas" });
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: "Conjuntos de tarefas que você lança no Todoist com um clique (na aba Todoist), todas com data de hoje. Uma tarefa por linha.",
+      text: "Conjuntos de tarefas que você lança no Todoist com um clique (na aba Todoist ou no dashboard), todas com data de hoje. Uma tarefa por linha. Use @etiqueta numa linha para aplicar uma etiqueta só àquela tarefa.",
     });
 
+    new Setting(containerEl)
+      .setName("Confirmar antes de lançar")
+      .setDesc("Pede confirmação (com a lista de tarefas) antes de criar. \"Sempre\" confirma até para 1 tarefa — útil para testar; depois mude para Nunca.")
+      .addDropdown(d => d
+        .addOption("always", "Sempre")
+        .addOption("many", "Só muitas (> 5 tarefas)")
+        .addOption("never", "Nunca")
+        .setValue(plugin.settings.packageConfirm)
+        .onChange(async v => { plugin.settings.packageConfirm = v as DashSettings["packageConfirm"]; await plugin.saveSettings(); }));
+
     const token = plugin.settings.todoistToken.trim();
-    // Busca os projetos uma vez (para os dropdowns); ao chegar, re-renderiza.
+    // Busca projetos e etiquetas uma vez (dropdowns + chips); ao chegar, re-renderiza.
     if (token && this.projects === null) {
       fetchTodoistProjects(token).then(ps => { this.projects = ps; this.display(); }).catch(() => { this.projects = []; });
     }
+    if (token && this.labels === null) {
+      fetchTodoistLabels(token).then(ls => { this.labels = ls; this.display(); }).catch(() => { this.labels = []; });
+    }
 
-    for (const pkg of plugin.settings.taskPackages) {
-      const s = new Setting(containerEl).setClass("wd-pkg-setting");
-      s.addText(t => t
-        .setPlaceholder("Nome do pacote")
-        .setValue(pkg.name)
-        .onChange(async v => { pkg.name = v; await plugin.saveSettings(); plugin.rerenderDashboards(); }));
-      s.addText(t => {
-        t.setPlaceholder("ícone (lucide/emoji)")
-          .setValue(pkg.icon ?? "")
-          .onChange(async v => { pkg.icon = v.trim() || undefined; await plugin.saveSettings(); plugin.rerenderDashboards(); });
-        t.inputEl.style.width = "9em";
-      });
-      s.addDropdown(d => {
-        d.addOption("", "Entrada (Inbox)");
-        for (const p of (this.projects ?? [])) d.addOption(p.id, p.name);
-        d.setValue(pkg.projectId ?? "");
-        d.onChange(async v => { pkg.projectId = v || undefined; await plugin.saveSettings(); });
-      });
-      s.addExtraButton(b => b
-        .setIcon("trash-2").setTooltip("Remover pacote")
-        .onClick(async () => {
-          plugin.settings.taskPackages = plugin.settings.taskPackages.filter(x => x !== pkg);
+    // Popover de etiquetas de um pacote (chips toggle com a cor do Todoist).
+    const openLabelsPopover = (anchor: HTMLElement, pkg: TaskPackage, refresh: () => void) =>
+      openPopover(anchor, body => {
+        body.createDiv({ cls: "wd-pop-title", text: "Etiquetas do pacote" });
+        if (!token) { body.createDiv({ cls: "wd-tf-hint", text: "Configure o token do Todoist." }); return; }
+        if (this.labels === null) { body.createDiv({ cls: "wd-tf-hint", text: "Carregando…" }); return; }
+        if (!this.labels.length) { body.createDiv({ cls: "wd-tf-hint", text: "Nenhuma etiqueta no Todoist." }); return; }
+        const chips = body.createDiv({ cls: "wd-pop-chips" });
+        const render = () => {
+          chips.empty();
+          for (const l of this.labels!) {
+            const on = (pkg.labels ?? []).includes(l.name);
+            const chip = chips.createSpan({ cls: "wd-todo-fchip" + (on ? " wd-on" : "") });
+            chip.createSpan({ cls: "wd-label-dot" }).style.background = TODOIST_COLORS[l.color] ?? LABEL_FALLBACK;
+            chip.createSpan({ text: `@${l.name}` });
+            chip.onclick = async () => {
+              const cur = pkg.labels ?? [];
+              const i = cur.indexOf(l.name);
+              if (i >= 0) cur.splice(i, 1); else cur.push(l.name);
+              pkg.labels = cur.length ? cur : undefined;
+              await plugin.saveSettings();
+              plugin.rerenderDashboards();
+              render();
+              refresh();
+            };
+          }
+        };
+        render();
+      }, { cls: "wd-pop-labels" });
+
+    // Popover de tarefas de um pacote (textarea; persiste no input e ao fechar).
+    const openTasksPopover = (anchor: HTMLElement, pkg: TaskPackage, refresh: () => void) => {
+      let ta: HTMLTextAreaElement;
+      openPopover(anchor, body => {
+        body.createDiv({ cls: "wd-pop-title", text: "Tarefas do pacote" });
+        ta = body.createEl("textarea", { cls: "wd-pkg-tasks" });
+        ta.value = pkg.tasks.join("\n");
+        ta.placeholder = "Uma tarefa por linha (ex.: Beber água)";
+        ta.rows = 6;
+        ta.addEventListener("input", async () => {
+          pkg.tasks = ta.value.split("\n").map(s => s.trim()).filter(Boolean);
           await plugin.saveSettings();
-          plugin.rerenderDashboards();
-          this.display();
-        }));
-      const ta = containerEl.createEl("textarea", { cls: "wd-pkg-tasks" });
-      ta.value = pkg.tasks.join("\n");
-      ta.placeholder = "Uma tarefa por linha (ex.: Beber água)";
-      ta.rows = 4;
-      ta.addEventListener("change", async () => {
-        pkg.tasks = ta.value.split("\n").map(s => s.trim()).filter(Boolean);
+          refresh();
+        });
+        body.createDiv({ cls: "wd-tf-hint", text: "Uma por linha · @etiqueta marca só aquela tarefa · fecha ao clicar fora ou Esc." });
+        setTimeout(() => ta.focus(), 0);
+      }, { cls: "wd-pop-tasks", width: 320, onClose: () => { plugin.rerenderDashboards(); } });
+    };
+
+    const pkgs = plugin.settings.taskPackages;
+    const list = containerEl.createDiv({ cls: "wd-pkg-list" });
+    pkgs.forEach((pkg, idx) => {
+      const row = list.createDiv({ cls: "wd-pkg-row" });
+
+      // Ícone (botão → popover de paleta).
+      const iconBtn = row.createSpan({ cls: "wd-pkg-icontrigger" });
+      iconBtn.setAttr("title", "Ícone do pacote");
+      const fillIcon = () => {
+        iconBtn.empty();
+        if (pkg.icon) renderIcon(iconBtn.createSpan({ cls: "wd-pkg-ico" }), pkg.icon);
+        else iconBtn.createSpan({ cls: "wd-pkg-ico-empty", text: "+" });
+      };
+      fillIcon();
+      iconBtn.onclick = () => openIconPopover(iconBtn, pkg.icon, async ic => {
+        pkg.icon = ic; await plugin.saveSettings(); plugin.rerenderDashboards(); fillIcon();
+      });
+
+      // Nome.
+      const name = row.createEl("input", { cls: "wd-pkg-name-input", attr: { type: "text", placeholder: "Nome do pacote" } });
+      name.value = pkg.name;
+      name.addEventListener("input", async () => { pkg.name = name.value; await plugin.saveSettings(); });
+      name.addEventListener("change", () => plugin.rerenderDashboards());
+
+      // Projeto.
+      const proj = row.createEl("select", { cls: "wd-pkg-proj dropdown" });
+      const addOpt = (v: string, t: string) => {
+        const o = proj.createEl("option", { text: t, value: v });
+        if ((pkg.projectId ?? "") === v) o.selected = true;
+      };
+      addOpt("", "Entrada");
+      for (const p of (this.projects ?? [])) addOpt(p.id, p.name);
+      proj.onchange = async () => { pkg.projectId = proj.value || undefined; await plugin.saveSettings(); };
+
+      // Etiquetas (botão → popover).
+      const lblBtn = row.createEl("button", { cls: "wd-pkg-chip-btn" });
+      const fillLbl = () => {
+        lblBtn.empty();
+        setIcon(lblBtn.createSpan({ cls: "wd-pkg-btn-ico" }), "tag");
+        lblBtn.createSpan({ text: "Etiquetas" });
+        const n = pkg.labels?.length ?? 0;
+        if (n) lblBtn.createSpan({ cls: "wd-pkg-count", text: String(n) });
+      };
+      fillLbl();
+      lblBtn.onclick = () => openLabelsPopover(lblBtn, pkg, fillLbl);
+
+      // Tarefas (botão → popover).
+      const taskBtn = row.createEl("button", { cls: "wd-pkg-chip-btn" });
+      const fillTask = () => {
+        taskBtn.empty();
+        setIcon(taskBtn.createSpan({ cls: "wd-pkg-btn-ico" }), "list");
+        taskBtn.createSpan({ text: "Tarefas" });
+        const n = pkg.tasks.filter(s => s.trim()).length;
+        if (n) taskBtn.createSpan({ cls: "wd-pkg-count", text: String(n) });
+      };
+      fillTask();
+      taskBtn.onclick = () => openTasksPopover(taskBtn, pkg, fillTask);
+
+      // Reordenar / remover.
+      const up = row.createSpan({ cls: "wd-pkg-mini" + (idx === 0 ? " wd-disabled" : "") });
+      setIcon(up, "chevron-up"); up.setAttr("title", "Mover para cima");
+      if (idx > 0) up.onclick = async () => { await plugin.movePackage(idx, -1); this.display(); };
+      const down = row.createSpan({ cls: "wd-pkg-mini" + (idx === pkgs.length - 1 ? " wd-disabled" : "") });
+      setIcon(down, "chevron-down"); down.setAttr("title", "Mover para baixo");
+      if (idx < pkgs.length - 1) down.onclick = async () => { await plugin.movePackage(idx, +1); this.display(); };
+      const del = row.createSpan({ cls: "wd-pkg-mini wd-pkg-del" });
+      setIcon(del, "trash-2"); del.setAttr("title", "Remover pacote");
+      del.onclick = async () => {
+        plugin.settings.taskPackages = pkgs.filter(x => x !== pkg);
         await plugin.saveSettings();
         plugin.rerenderDashboards();
-      });
-    }
+        this.display();
+      };
+    });
 
     new Setting(containerEl)
       .setName("Adicionar pacote")
