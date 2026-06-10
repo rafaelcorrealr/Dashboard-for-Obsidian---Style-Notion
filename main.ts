@@ -11,6 +11,7 @@ const LS_ST_KEY = "werus-dashboard:syncthingApiKey";
 const LS_ST_FOLDER = "werus-dashboard:syncthingFolderId";
 const LS_TODO_CACHE = "werus-dashboard:todoistCache";   // cache offline do Todoist (por-dispositivo)
 const TODO_TTL = 5 * 60 * 1000;                          // idade máx. do cache antes de re-buscar (5 min)
+const TODO_MAX_PAGES = 50;                               // teto de páginas paginadas (anti-loop se a API repetir o cursor)
 
 // uid curto e estável (pacotes de tarefas).
 function uid(): string {
@@ -186,7 +187,9 @@ const PKG_ICONS = [
 // (as do pacote primeiro, depois as inline, sem duplicar).
 function splitTaskLabels(line: string, pkgLabels: string[] = []): { title: string; labels: string[] } {
   const inline: string[] = [];
-  const stripped = line.replace(/@([\p{L}\p{N}_]+)/gu, (_m, name: string) => { inline.push(name); return ""; })
+  // Só `@etiqueta` no início ou depois de espaço (lookbehind) — não pega o "@gmail"
+  // de um e-mail como "pagar conta@gmail.com".
+  const stripped = line.replace(/(?<=^|\s)@([\p{L}\p{N}_]+)/gu, (_m, name: string) => { inline.push(name); return ""; })
     .replace(/\s{2,}/g, " ").trim();
   const title = stripped || line.trim();
   const labels = [...new Set([...pkgLabels, ...inline])];
@@ -255,6 +258,7 @@ function openIconPopover(anchor: HTMLElement, current: string | undefined, onPic
 async function fetchTodoistTasks(token: string): Promise<TodoistTask[]> {
   const all: TodoistTask[] = [];
   let cursor: string | null = null;
+  let pages = 0;
   do {
     const url = new URL("https://api.todoist.com/api/v1/tasks");
     url.searchParams.set("limit", "200");
@@ -273,7 +277,7 @@ async function fetchTodoistTasks(token: string): Promise<TodoistTask[]> {
     // v1 envelopa em results; tolera resposta como array puro por segurança.
     if (Array.isArray(data)) { all.push(...(data as TodoistTask[])); cursor = null; }
     else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
-  } while (cursor);
+  } while (cursor && ++pages < TODO_MAX_PAGES);
   return all;
 }
 
@@ -286,6 +290,7 @@ interface TodoistProject {
 async function fetchTodoistProjects(token: string): Promise<TodoistProject[]> {
   const all: TodoistProject[] = [];
   let cursor: string | null = null;
+  let pages = 0;
   do {
     const url = new URL("https://api.todoist.com/api/v1/projects");
     url.searchParams.set("limit", "200");
@@ -302,7 +307,7 @@ async function fetchTodoistProjects(token: string): Promise<TodoistProject[]> {
     const data = res.json as { results?: TodoistProject[]; next_cursor?: string | null };
     if (Array.isArray(data)) { all.push(...(data as TodoistProject[])); cursor = null; }
     else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
-  } while (cursor);
+  } while (cursor && ++pages < TODO_MAX_PAGES);
   return all;
 }
 
@@ -316,6 +321,7 @@ interface TodoistLabel {
 async function fetchTodoistLabels(token: string): Promise<TodoistLabel[]> {
   const all: TodoistLabel[] = [];
   let cursor: string | null = null;
+  let pages = 0;
   do {
     const url = new URL("https://api.todoist.com/api/v1/labels");
     url.searchParams.set("limit", "200");
@@ -332,7 +338,7 @@ async function fetchTodoistLabels(token: string): Promise<TodoistLabel[]> {
     const data = res.json as { results?: TodoistLabel[]; next_cursor?: string | null };
     if (Array.isArray(data)) { all.push(...(data as TodoistLabel[])); cursor = null; }
     else { all.push(...(data.results ?? [])); cursor = data.next_cursor ?? null; }
-  } while (cursor);
+  } while (cursor && ++pages < TODO_MAX_PAGES);
   return all;
 }
 
@@ -2445,7 +2451,12 @@ export default class WerusDashboard extends Plugin {
     workspace.revealLeaf(leaf);
   }
 
-  onunload() {}
+  onunload() {
+    // Varre elementos flutuantes que vivem no document.body (tooltips/popovers): se o
+    // plugin for desabilitado com um aberto, o onClose da view pode não rodar.
+    this.todo?.hideTip();
+    document.querySelectorAll(".wd-tooltip, .wd-pop").forEach(e => e.remove());
+  }
 }
 
 // ── Aba dedicada do Todoist ──────────────────────────────────────────────────

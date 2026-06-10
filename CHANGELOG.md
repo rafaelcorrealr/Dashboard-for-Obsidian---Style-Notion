@@ -6,6 +6,14 @@
 
 ---
 
+## [0.12.11] — alpha — 2026-06-10
+
+**Saúde técnica — polimento (baixo risco).**
+
+- **Etiquetas inline:** `@etiqueta` num pacote agora só vira etiqueta quando está no **início ou depois de um espaço** — não captura mais o "@gmail" de um e-mail (ex.: "pagar conta@gmail.com" fica intacto).
+- **Anti-loop nas buscas paginadas:** teto de 50 páginas nos fetch do Todoist (tarefas/projetos/etiquetas) — blindagem caso a API repita o cursor.
+- **Limpeza ao desabilitar:** `onunload` remove tooltips/popovers que tenham ficado abertos no corpo da página.
+
 ## [0.12.10] — alpha — 2026-06-10
 
 **Saúde técnica (§5): auto-refresh + cache offline do Todoist.**
