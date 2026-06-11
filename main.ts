@@ -1752,6 +1752,35 @@ class GameController {
         `${this.pending.length} concluída(s) aguardando salvar (+${this.pendingXp} XP) — clique em "Salvar concluídas".` });
 
     if (opts.full) this.renderXpChart(host, s);
+    if (opts.full) this.renderScopeLevels(host, s);
+  }
+
+  // Níveis por escopo (projeto/etiqueta): top por XP, cada um com nível + mini-barra.
+  // Reusa a barra de XP (`.wd-game-bar`) e `levelInfo(xp)`.
+  private renderScopeLevels(host: HTMLElement, s: GameStats) {
+    const TOP = 8;
+    const section = (title: string, data: Map<string, number>, prefix = "", renameEmpty?: string) => {
+      const top = [...data.entries()]
+        .filter(([, xp]) => xp > 0)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, TOP);
+      if (!top.length) return;
+      const sec = host.createDiv({ cls: "wd-game-scopesec" });
+      sec.createDiv({ cls: "wd-game-chart-title", text: title });
+      for (const [name, xp] of top) {
+        const li = levelInfo(xp);
+        const item = sec.createDiv({ cls: "wd-game-scope-item" });
+        const head = item.createDiv({ cls: "wd-game-scope-head" });
+        head.createSpan({ cls: "wd-game-scope-name",
+          text: prefix + (renameEmpty && name === "—" ? renameEmpty : name) });
+        head.createSpan({ cls: "wd-game-scope-meta", text: `Nv ${li.level} · ${xp} XP` });
+        const bar = item.createDiv({ cls: "wd-game-bar wd-game-bar-mini" });
+        bar.createDiv({ cls: "wd-game-bar-fill" }).style.width = `${li.pct}%`;
+        bar.setAttr("title", `${li.into}/${li.forNext} XP para o nível ${li.level + 1}`);
+      }
+    };
+    section("Níveis por projeto", s.byProject, "", "Sem projeto");
+    section("Níveis por etiqueta", s.byLabel, "@");
   }
 
   // Gráfico de XP por dia (últimos N dias) — reusa o visual de barras do "Crescimento".

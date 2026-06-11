@@ -1988,6 +1988,24 @@ body {
   color: var(--wd-text-faint); margin-bottom: 6px;
 }
 
+/* Níveis por projeto/etiqueta (aba): nome + Nv N + mini-barra + XP */
+.wd-game-scopesec { margin-top: 14px; }
+.wd-game-scope-item { margin-bottom: 9px; }
+.wd-game-scope-item:last-child { margin-bottom: 0; }
+.wd-game-scope-head {
+  display: flex; align-items: baseline; justify-content: space-between;
+  gap: 8px; margin-bottom: 3px;
+}
+.wd-game-scope-name {
+  font-size: 12px; color: var(--wd-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.wd-game-scope-meta {
+  font-size: 11px; color: var(--wd-text-muted); white-space: nowrap;
+  font-family: var(--font-monospace, monospace);
+}
+.wd-game-bar-mini { height: 6px; }
+
 /* Botão "não feito" (✗) nas linhas de tarefa */
 .wd-todo-undone {
   display: inline-flex; align-items: center; justify-content: center;

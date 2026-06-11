@@ -6,6 +6,14 @@
 
 ---
 
+## [0.13.3] — alpha — 2026-06-11
+
+**Gamificação — níveis por projeto e por etiqueta.**
+
+- Na aba da Gamificação, duas novas seções: **Níveis por projeto** e **Níveis por etiqueta** (top 8 por XP).
+- Cada item mostra **nível + barra de progresso + XP** acumulado naquele escopo (só tarefas feitas contam; punições não entram).
+- As mini-barras reaproveitam a barra de XP (cor do tema + marcações de 10%). Projeto vazio aparece como "Sem projeto"; etiquetas com `@`.
+
 ## [0.13.2] — alpha — 2026-06-11
 
 **Barra de XP — cor sólida do tema + marcações de 10%.**
