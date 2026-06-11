@@ -1928,13 +1928,29 @@ body {
 .wd-game-lvlnum { font-family: var(--font-monospace, monospace); font-weight: 700; font-size: 16px; color: var(--wd-text); }
 .wd-game-xp { font-size: 12px; color: var(--wd-text-muted); }
 .wd-game-bar {
+  position: relative;
   height: 8px; border-radius: 6px; overflow: hidden;
-  background: var(--wd-fill); border: 1px solid var(--wd-border);
+  /* Linhas FORTES a cada 10% no fundo do trilho — o preenchimento opaco as
+     mascara, então só aparecem na parte vazia. */
+  background:
+    repeating-linear-gradient(90deg,
+      transparent 0, transparent calc(10% - 1px),
+      rgba(130,130,130,.34) calc(10% - 1px), rgba(130,130,130,.34) 10%),
+    var(--wd-fill);
+  border: 1px solid var(--wd-border);
 }
 .wd-game-bar-fill {
   height: 100%;
-  background: linear-gradient(90deg, #FF4B2B, #F59E0B, #10B981);
+  background: var(--interactive-accent);   /* sólido, segue o tema; opaco p/ mascarar as linhas fortes */
   transition: width .35s ease;
+}
+/* Linhas FRACAS a cada 10% por cima de tudo (mesma geometria → alinhadas): na
+   parte cheia sobra só este traço leve, sem corte seco no accent. */
+.wd-game-bar::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background: repeating-linear-gradient(90deg,
+    transparent 0, transparent calc(10% - 1px),
+    rgba(130,130,130,.12) calc(10% - 1px), rgba(130,130,130,.12) 10%);
 }
 .wd-game-metrics { display: flex; gap: 8px; margin-top: 10px; }
 .wd-game-metric {

@@ -6,6 +6,14 @@
 
 ---
 
+## [0.13.2] — alpha — 2026-06-11
+
+**Barra de XP — cor sólida do tema + marcações de 10%.**
+
+- A barra de XP agora usa uma **cor sólida que segue o tema do Obsidian** (`--interactive-accent`), em vez do gradiente fixo.
+- **Linhas a cada 10%** ao longo da barra: nítidas na parte vazia e bem suaves (translúcidas) na parte já preenchida — marcam o progresso sem dar um "corte seco" no preenchimento.
+- Mudança só de estilo (CSS); vale para a faixa do dashboard e para a aba da Gamificação.
+
 ## [0.13.1] — alpha — 2026-06-11
 
 **Gamificação — painel visual + correções nos Pacotes de tarefas.**
