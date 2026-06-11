@@ -204,15 +204,18 @@ const PKG_ICONS = [
 // Separa as etiquetas inline (@etiqueta) do texto de uma linha de tarefa.
 // Devolve o título limpo (estilo Quick Add do Todoist) + etiquetas combinadas
 // (as do pacote primeiro, depois as inline, sem duplicar).
-function splitTaskLabels(line: string, pkgLabels: string[] = []): { title: string; labels: string[] } {
+function splitTaskLabels(line: string, pkgLabels: string[] = []): { title: string; labels: string[]; priority: number } {
   const inline: string[] = [];
-  // Só `@etiqueta` no início ou depois de espaço (lookbehind) — não pega o "@gmail"
-  // de um e-mail como "pagar conta@gmail.com".
-  const stripped = line.replace(/(?<=^|\s)@([\p{L}\p{N}_]+)/gu, (_m, name: string) => { inline.push(name); return ""; })
+  let priority = 1;   // API: 1 = p4 (padrão) … 4 = p1
+  // Só `@etiqueta` / `pN` no início ou depois de espaço (lookbehind) — não pega o "@gmail"
+  // de um e-mail nem o "p1" de "top1".
+  const stripped = line
+    .replace(/(?<=^|\s)@([\p{L}\p{N}_]+)/gu, (_m, name: string) => { inline.push(name); return ""; })
+    .replace(/(?<=^|\s)p([1-4])(?=\s|$)/gi, (_m, d: string) => { priority = 5 - Number(d); return ""; })
     .replace(/\s{2,}/g, " ").trim();
   const title = stripped || line.trim();
   const labels = [...new Set([...pkgLabels, ...inline])];
-  return { title, labels };
+  return { title, labels, priority };
 }
 
 // Acessibilidade: faz um elemento clicável (div/span) se comportar como botão —
@@ -233,10 +236,12 @@ function clickable<T extends HTMLElement>(el: T, handler: (e: MouseEvent) => voi
 function openPopover(
   anchor: HTMLElement,
   fill: (body: HTMLElement, close: () => void) => void,
-  opts: { cls?: string; width?: number; onClose?: () => void } = {},
+  opts: { cls?: string; width?: number; onClose?: () => void; container?: HTMLElement } = {},
 ): () => void {
   document.querySelectorAll(".wd-pop").forEach(e => e.remove());
-  const pop = document.body.createDiv({ cls: "wd-pop" + (opts.cls ? " " + opts.cls : "") });
+  // Por padrão vive no document.body; dentro da modal de Configurações precisa viver no
+  // container da aba (senão a modal prende o foco e não dá para digitar no textarea).
+  const pop = (opts.container ?? document.body).createDiv({ cls: "wd-pop" + (opts.cls ? " " + opts.cls : "") });
   if (opts.width) pop.style.width = `${opts.width}px`;
 
   const onDoc = (e: MouseEvent) => {
@@ -552,6 +557,13 @@ interface GameStats {
 
 function gameLevel(xp: number): number {
   return xp <= 0 ? 0 : Math.floor(Math.sqrt(xp / 100));
+}
+// Nível + progresso para um total de XP (geral ou por escopo). XP p/ nível L = 100·L².
+function levelInfo(xp: number): { level: number; into: number; forNext: number; pct: number } {
+  const level = gameLevel(xp);
+  const into = Math.max(0, xp) - 100 * level * level;
+  const forNext = 100 * (2 * level + 1);
+  return { level, into, forNext, pct: forNext ? Math.min(100, Math.round(into / forNext * 100)) : 0 };
 }
 
 // Campos separados por TAB (robusto: conteúdo/chave não contêm tab; a chave pode
@@ -1255,7 +1267,7 @@ class TodoistController {
         title: `Lançar “${pkg.name || "pacote"}”?`,
         body: `Isso vai criar ${items.length} tarefa(s) no Todoist com data de hoje:`,
         items: items.map(it => ({
-          text: it.title,
+          text: (it.priority > 1 ? `[${priMeta(it.priority).label}] ` : "") + it.title,
           labels: it.labels.map(n => ({ name: n, color: this.labelColor(n) })),
         })),
         cta: `Lançar ${items.length}`,
@@ -1268,11 +1280,12 @@ class TodoistController {
     const due = toKey(new Date());
     let ok = 0;
     try {
-      for (const { title, labels } of items) {
+      for (const { title, labels, priority } of items) {
         try {
           const fields: TodoistWrite = { content: title, due_date: due };
           if (pkg.projectId) fields.project_id = pkg.projectId;
           if (labels.length) fields.labels = labels;
+          if (priority > 1) fields.priority = priority;
           await createTodoistTask(token, fields);
           ok++;
         } catch (e) {
@@ -1539,6 +1552,8 @@ class GameController {
   private busy = false;                 // colheita/markUndone em andamento
   private pending: TodoistTask[] = [];  // concluídas na API ainda não no log (live)
   private pendingXp = 0;
+  private lastBarPct = 0;               // último % da barra (p/ animar do valor anterior)
+  private lastLevel = 0;
   private subs = new Set<() => void>();
 
   constructor(private app: App, private plugin: WerusDashboard) {}
@@ -1710,9 +1725,16 @@ class GameController {
     lvl.createSpan({ cls: "wd-game-lvlnum", text: `Nível ${s.level}` });
     lvl.createSpan({ cls: "wd-game-xp", text: `${s.totalXp} XP` });
     const bar = host.createDiv({ cls: "wd-game-bar" });
-    bar.createDiv({ cls: "wd-game-bar-fill" }).style.width =
-      `${s.xpForNext ? Math.min(100, Math.round(s.xpIntoLevel / s.xpForNext * 100)) : 0}%`;
+    const fill = bar.createDiv({ cls: "wd-game-bar-fill" });
+    const pct = s.xpForNext ? Math.min(100, Math.round(s.xpIntoLevel / s.xpForNext * 100)) : 0;
+    // Anima do último % exibido até o novo; em level-up, enche do zero.
+    fill.style.width = `${s.level > this.lastLevel ? 0 : this.lastBarPct}%`;
+    void fill.offsetWidth;                         // reflow → a transição CSS parte do valor anterior
+    fill.style.width = `${pct}%`;
+    this.lastBarPct = pct; this.lastLevel = s.level;
     bar.setAttr("title", `${s.xpIntoLevel}/${s.xpForNext} XP para o nível ${s.level + 1}`);
+    host.createDiv({ cls: "wd-game-next",
+      text: `faltam ${Math.max(0, s.xpForNext - s.xpIntoLevel)} XP para o nível ${s.level + 1}` });
 
     const grid = host.createDiv({ cls: "wd-game-metrics" });
     const metric = (icon: string, val: string, label: string, cls = "") => {
@@ -1728,6 +1750,36 @@ class GameController {
     if (opts.full && this.pending.length)
       host.createDiv({ cls: "wd-game-hint", text:
         `${this.pending.length} concluída(s) aguardando salvar (+${this.pendingXp} XP) — clique em "Salvar concluídas".` });
+
+    if (opts.full) this.renderXpChart(host, s);
+  }
+
+  // Gráfico de XP por dia (últimos N dias) — reusa o visual de barras do "Crescimento".
+  private renderXpChart(host: HTMLElement, s: GameStats) {
+    const DAYS = Platform.isPhone ? 15 : 30;
+    const todayKey = toKey(new Date());
+    const days: { key: string; xp: number; count: number; label: string }[] = [];
+    for (let i = DAYS - 1; i >= 0; i--) {
+      const d = new Date(); d.setDate(d.getDate() - i);
+      const key = toKey(d);
+      const [, m, day] = key.split("-");
+      const agg = s.byDay.get(key);
+      days.push({ key, xp: agg?.xp ?? 0, count: agg?.count ?? 0, label: `${day}/${m}` });
+    }
+    const max = Math.max(...days.map(d => Math.max(0, d.xp)), 1);   // só XP positivo dimensiona
+    const sec = host.createDiv({ cls: "wd-game-chartsec" });
+    sec.createDiv({ cls: "wd-game-chart-title", text: `XP nos últimos ${DAYS} dias` });
+    const chart = sec.createDiv({ cls: "wd-growth-chart" });
+    days.forEach(({ key, xp, count, label }, idx) => {
+      const col = chart.createDiv({ cls: "wd-growth-col" + (key === todayKey ? " wd-growth-today" : "") });
+      const barArea = col.createDiv({ cls: "wd-growth-bar-area" });
+      const empty = xp <= 0;
+      const bar = barArea.createDiv({ cls: "wd-growth-bar" + (empty ? " wd-growth-bar-zero" : "") });
+      bar.style.height = empty ? "3px" : `${Math.max(5, Math.round((xp / max) * 100))}%`;
+      bar.setAttr("title", `${label}: ${xp >= 0 ? "+" : ""}${xp} XP · ${count} feita(s)`);
+      const showLbl = idx === 0 || idx === DAYS - 1 || idx % 7 === 0;
+      col.createDiv({ cls: "wd-growth-lbl", text: showLbl ? label : "" });
+    });
   }
 }
 
@@ -3448,7 +3500,7 @@ class WerusSettingTab extends PluginSettingTab {
     containerEl.createEl("h3", { text: "Pacotes de tarefas" });
     containerEl.createEl("p", {
       cls: "setting-item-description",
-      text: "Conjuntos de tarefas que você lança no Todoist com um clique (na aba Todoist ou no dashboard), todas com data de hoje. Uma tarefa por linha. Use @etiqueta numa linha para aplicar uma etiqueta só àquela tarefa.",
+      text: "Conjuntos de tarefas que você lança no Todoist com um clique (na aba Todoist ou no dashboard), todas com data de hoje. Uma tarefa por linha. Numa linha, use @etiqueta para aplicar uma etiqueta só àquela tarefa e p1–p4 para a prioridade (p1 = mais alta; padrão p4).",
     });
 
     new Setting(containerEl)
@@ -3515,9 +3567,9 @@ class WerusSettingTab extends PluginSettingTab {
           await plugin.saveSettings();
           refresh();
         });
-        body.createDiv({ cls: "wd-tf-hint", text: "Uma por linha · @etiqueta marca só aquela tarefa · fecha ao clicar fora ou Esc." });
+        body.createDiv({ cls: "wd-tf-hint", text: "Uma por linha · @etiqueta marca só aquela tarefa · p1–p4 define a prioridade (p1 = mais alta) · fecha ao clicar fora ou Esc." });
         setTimeout(() => ta.focus(), 0);
-      }, { cls: "wd-pop-tasks", width: 320, onClose: () => { plugin.rerenderDashboards(); } });
+      }, { cls: "wd-pop-tasks", width: 320, container: this.containerEl, onClose: () => { plugin.rerenderDashboards(); } });
     };
 
     const pkgs = plugin.settings.taskPackages;

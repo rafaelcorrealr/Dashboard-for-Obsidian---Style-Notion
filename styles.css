@@ -1965,6 +1965,12 @@ body {
   background: var(--interactive-accent); color: #fff;
 }
 .wd-game-hint { margin-top: 10px; font-size: 11px; color: var(--wd-text-muted); }
+.wd-game-next { margin-top: 4px; font-size: 11px; color: var(--wd-text-muted); }
+.wd-game-chartsec { margin-top: 14px; }
+.wd-game-chart-title {
+  font-family: var(--font-monospace, monospace); font-size: 10px; letter-spacing: 1px;
+  color: var(--wd-text-faint); margin-bottom: 6px;
+}
 
 /* Botão "não feito" (✗) nas linhas de tarefa */
 .wd-todo-undone {

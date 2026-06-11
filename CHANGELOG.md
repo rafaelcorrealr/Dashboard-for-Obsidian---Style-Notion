@@ -6,6 +6,19 @@
 
 ---
 
+## [0.13.1] — alpha — 2026-06-11
+
+**Gamificação — painel visual + correções nos Pacotes de tarefas.**
+
+Gamificação (aba):
+- **Barra de XP animada:** ao salvar concluídas / marcar não feita, a barra cresce (ou encolhe) animada a partir do valor anterior; em subida de nível, enche do zero.
+- **"Faltam X XP para o nível N+1"** visível embaixo da barra.
+- **Gráfico de XP por dia** (últimos 30 dias / 15 no celular) na aba, com tooltip (data · XP · nº de feitas).
+
+Pacotes de tarefas:
+- **Correção:** agora dá para **digitar** no campo de tarefas (o popover passou a viver dentro da janela de Configurações — antes o foco ficava preso e não aceitava texto).
+- **Prioridade por linha:** use `p1`–`p4` numa linha da tarefa (`p1` = mais alta; padrão `p4`), junto com `@etiqueta`. Ex.: `Pagar conta p1 @financeiro`. A dica e a descrição explicam a sintaxe; o preview de confirmação mostra a prioridade.
+
 ## [0.13.0] — alpha — 2026-06-10
 
 **Gamificação — XP, nível e streak a partir do Todoist (1ª fase do épico v0.13).**
