@@ -13,13 +13,22 @@ const LS_TODO_CACHE = "werus-dashboard:todoistCache";   // cache offline do Todo
 const TODO_TTL = 5 * 60 * 1000;                          // idade máx. do cache antes de re-buscar (5 min)
 const TODO_MAX_PAGES = 50;                               // teto de páginas paginadas (anti-loop se a API repetir o cursor)
 
+// ── Gamificação (v0.13) ──────────────────────────────────────────────────────
+const GAME_VIEW_TYPE = "werus-game";
+const GAME_LOG_PATH = "20.Areas/Gamificação.md";        // log canônico de XP no cofre
+const GAME_LOG_FENCE = "wd-game-log";                   // bloco cercado com os eventos (1 por linha)
+const HARVEST_BACKFILL_DAYS = 90;                       // 1ª colheita: janela máx. da API
+// XP base por prioridade da API (4 = p1 … 1 = p4).
+const XP_BY_PRI: Record<number, number> = { 4: 8, 3: 5, 2: 3, 1: 1 };
+function xpForPriority(p: number): number { return XP_BY_PRI[p] ?? 1; }
+
 // uid curto e estável (pacotes de tarefas).
 function uid(): string {
   return Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 }
 
 type Status = "progress" | "paused" | "cancelled";
-type SectionId = "calendar" | "para" | "heatmap" | "growth" | "stats" | "todoist" | "sync";
+type SectionId = "calendar" | "para" | "heatmap" | "growth" | "stats" | "todoist" | "sync" | "game";
 
 interface TodoistFilters {
   projects: string[];   // ids de projeto selecionados (vazio = todos)
@@ -62,10 +71,14 @@ interface DashSettings {
   syncthingShowCounts: boolean;  // mostrar "sincronizados / total" de itens por aparelho
   taskPackages: TaskPackage[];   // pacotes de tarefas (lançar no Todoist)
   packageConfirm: "always" | "many" | "never";   // quando pedir confirmação ao lançar
+  // Gamificação (v0.13)
+  gamificationEnabled: boolean;  // mostra a seção/aba do Game
+  gamePenaltyFactor: number;     // "não feito" tira base × fator
+  gameLastHarvest: string;       // ISO da última colheita de concluídas (limita o fetch)
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
-  sectionOrder: ["stats", "todoist", "para", "sync", "heatmap", "growth", "calendar"],
+  sectionOrder: ["stats", "game", "todoist", "para", "sync", "heatmap", "growth", "calendar"],
   compact: false,
   hidden: [],
   noteView: "list",
@@ -84,6 +97,9 @@ const DEFAULT_SETTINGS: DashSettings = {
   syncthingShowCounts: false,
   taskPackages: [],
   packageConfirm: "many",
+  gamificationEnabled: true,
+  gamePenaltyFactor: 1.5,
+  gameLastHarvest: "",
 };
 
 interface ParaSection {
@@ -127,6 +143,7 @@ const SEC_GROW = "sec:growth";
 const SEC_STAT = "sec:stats";
 const SEC_TODO = "sec:todoist";
 const SEC_SYNC = "sec:sync";
+const SEC_GAME = "sec:game";
 
 // Rótulos amigáveis das seções (usados na aba de Configurações).
 const SECTION_LABEL: Record<SectionId, string> = {
@@ -137,6 +154,7 @@ const SECTION_LABEL: Record<SectionId, string> = {
   heatmap:  "Atividade do cofre",
   growth:   "Crescimento do cofre",
   calendar: "Relatórios",
+  game:     "Gamificação",
 };
 
 // ── Todoist ─────────────────────────────────────────────────────────────────
@@ -151,6 +169,7 @@ interface TodoistTask {
   is_completed?: boolean;
   labels?: string[];
   url?: string;
+  completed_at?: string;   // só nas concluídas (by_completion_date)
 }
 
 // Prioridade da API (4=urgente) → rótulo/cor da UI (p1=vermelho … p4=cinza).
@@ -477,6 +496,165 @@ async function deleteTodoistTask(token: string, id: string): Promise<void> {
   if (res.status !== 204 && res.status !== 200) throw new Error(`HTTP ${res.status}`);
 }
 
+// ── Gamificação: concluídas + log no cofre + cálculo (v0.13) ─────────────────
+
+// Busca concluídas por data de conclusão. API v1: { items, next_cursor }, paginada.
+async function fetchCompletedTasks(token: string, since: string, until: string): Promise<TodoistTask[]> {
+  const all: TodoistTask[] = [];
+  let cursor: string | null = null;
+  let pages = 0;
+  do {
+    const url = new URL("https://api.todoist.com/api/v1/tasks/completed/by_completion_date");
+    url.searchParams.set("since", since);
+    url.searchParams.set("until", until);
+    url.searchParams.set("limit", "200");
+    if (cursor) url.searchParams.set("cursor", cursor);
+    const res = await requestUrl({
+      url: url.toString(),
+      method: "GET",
+      headers: { Authorization: `Bearer ${token}` },
+      throw: false,
+    });
+    if (res.status === 401 || res.status === 403) throw new Error("token inválido (401/403)");
+    if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+    const data = res.json as { items?: TodoistTask[]; next_cursor?: string | null };
+    all.push(...(data.items ?? []));
+    cursor = data.next_cursor ?? null;
+  } while (cursor && ++pages < TODO_MAX_PAGES);
+  return all;
+}
+
+// Um evento do log de gamificação (tarefa feita = +XP; não-feita = −XP).
+type GameEventType = "feito" | "nao-feito";
+interface GameEvent {
+  date: string;     // YYYY-MM-DD (dia local da conclusão/marcação)
+  type: GameEventType;
+  xp: number;       // assinado
+  key: string;      // idempotência: `${taskId}|${completed_at|ts}`
+  content: string;
+  project: string;  // nome do projeto (ou id se desconhecido)
+  labels: string[];
+}
+
+interface GameStats {
+  totalXp: number;
+  level: number;
+  xpIntoLevel: number;
+  xpForNext: number;
+  streakCurrent: number;
+  streakBest: number;
+  todayXp: number;
+  todayCount: number;
+  byDay: Map<string, { xp: number; count: number }>;
+  byProject: Map<string, number>;   // só "feito"
+  byLabel: Map<string, number>;     // só "feito"
+}
+
+function gameLevel(xp: number): number {
+  return xp <= 0 ? 0 : Math.floor(Math.sqrt(xp / 100));
+}
+
+// Campos separados por TAB (robusto: conteúdo/chave não contêm tab; a chave pode
+// conter "|" sem colidir). Tabs/quebras no texto são neutralizados.
+function escapeGameField(s: string): string {
+  return s.replace(/[\r\n\t]+/g, " ");
+}
+function serializeGameEvent(e: GameEvent): string {
+  const labels = e.labels.map(l => escapeGameField(l).replace(/,/g, " ")).join(",");
+  return [e.date, e.type, String(e.xp), e.key, escapeGameField(e.content), escapeGameField(e.project), labels].join("\t");
+}
+function parseGameEventLine(line: string): GameEvent | null {
+  const p = line.split("\t").map(s => s.trim());
+  if (p.length < 4) return null;
+  const [date, type, xpRaw, key, content = "", project = "", labelsRaw = ""] = p;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
+  if (type !== "feito" && type !== "nao-feito") return null;
+  const xp = Number(xpRaw);
+  if (!Number.isFinite(xp) || !key) return null;
+  const labels = labelsRaw ? labelsRaw.split(",").map(s => s.trim()).filter(Boolean) : [];
+  return { date, type, xp, key, content, project, labels };
+}
+// Extrai os eventos do bloco cercado ```wd-game-log … ``` da nota.
+function parseGameLog(content: string): GameEvent[] {
+  const m = content.match(new RegExp("```" + GAME_LOG_FENCE + "\\r?\\n([\\s\\S]*?)```"));
+  if (!m) return [];
+  const out: GameEvent[] = [];
+  for (const raw of m[1].split("\n")) {
+    const ev = parseGameEventLine(raw.trim());
+    if (ev) out.push(ev);
+  }
+  return out;
+}
+// Conteúdo completo da nota (determinístico: eventos ordenados → mesmos eventos =
+// mesmo arquivo em qualquer dispositivo, evitando conflito de Syncthing).
+function buildGameLogContent(events: GameEvent[]): string {
+  const sorted = [...events].sort((a, b) =>
+    a.date < b.date ? -1 : a.date > b.date ? 1 : a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+  return [
+    "---", "owner: Werus", "permissions:", "  read: [all]", "  write:", "    - Werus", "    - Claude",
+    "reviewed: false", "type: reference", "tags: [gamificacao]", "---", "",
+    "# Gamificação — Log de XP", "",
+    "> Arquivo **gerido pelo plugin Werus Dashboard**. Cada linha do bloco abaixo é um evento",
+    "> (tarefa feita = XP positivo, não feita = XP negativo). Não edite à mão — o painel do",
+    "> plugin mostra nível, streak e estatísticas a partir daqui.", "",
+    "```" + GAME_LOG_FENCE,
+    sorted.map(serializeGameEvent).join("\n"),
+    "```", "",
+  ].join("\n");
+}
+
+// Streak atual (até hoje/ontem) + recorde, a partir dos dias com ≥1 "feito".
+function computeStreak(doneDays: Set<string>): { streakCurrent: number; streakBest: number } {
+  if (!doneDays.size) return { streakCurrent: 0, streakBest: 0 };
+  const dayMs = 86400000;
+  const sorted = [...doneDays].sort();
+  let best = 1, run = 1;
+  for (let i = 1; i < sorted.length; i++) {
+    if (Date.parse(sorted[i] + "T00:00:00") - Date.parse(sorted[i - 1] + "T00:00:00") === dayMs) {
+      run++; best = Math.max(best, run);
+    } else run = 1;
+  }
+  let cur = 0;
+  let cursor = new Date(); cursor.setHours(0, 0, 0, 0);
+  if (!doneDays.has(toKey(cursor))) cursor = new Date(cursor.getTime() - dayMs);
+  while (doneDays.has(toKey(cursor))) { cur++; cursor = new Date(cursor.getTime() - dayMs); }
+  return { streakCurrent: cur, streakBest: Math.max(best, cur) };
+}
+
+// Estatísticas a partir dos eventos do log (fonte canônica).
+function computeGameStats(events: GameEvent[]): GameStats {
+  const byDay = new Map<string, { xp: number; count: number }>();
+  const byProject = new Map<string, number>();
+  const byLabel = new Map<string, number>();
+  let totalXp = 0;
+  for (const e of events) {
+    totalXp += e.xp;
+    const d = byDay.get(e.date) ?? { xp: 0, count: 0 };
+    d.xp += e.xp;
+    if (e.type === "feito") d.count += 1;
+    byDay.set(e.date, d);
+    if (e.type === "feito") {
+      const proj = e.project || "—";
+      byProject.set(proj, (byProject.get(proj) ?? 0) + e.xp);
+      for (const l of e.labels) byLabel.set(l, (byLabel.get(l) ?? 0) + e.xp);
+    }
+  }
+  if (totalXp < 0) totalXp = 0;
+  const level = gameLevel(totalXp);
+  const doneDays = new Set<string>();
+  for (const e of events) if (e.type === "feito") doneDays.add(e.date);
+  const { streakCurrent, streakBest } = computeStreak(doneDays);
+  const today = byDay.get(toKey(new Date())) ?? { xp: 0, count: 0 };
+  return {
+    totalXp, level,
+    xpIntoLevel: totalXp - 100 * level * level,
+    xpForNext: 100 * (2 * level + 1),
+    streakCurrent, streakBest,
+    todayXp: today.xp, todayCount: today.count,
+    byDay, byProject, byLabel,
+  };
+}
+
 // Data de vencimento (YYYY-MM-DD) de uma tarefa, ou null se sem due.
 function dueKey(t: TodoistTask): string | null {
   const d = t.due?.date ?? t.due?.datetime;
@@ -781,6 +959,9 @@ class TodoistController {
 
   hideTip() { if (this.tip) { this.tip.remove(); this.tip = null; } }
 
+  // Nome do projeto pelo id (reusado pela Gamificação). Vazio se desconhecido.
+  projectName(id?: string): string { return (id && this.projectMap.get(id)) || ""; }
+
   private dayRange(): 3 | 7 {
     return this.plugin.settings.todoistDayRange === 3 ? 3 : 7;
   }
@@ -868,6 +1049,12 @@ class TodoistController {
       row.createSpan({ cls: "wd-todo-row-date", text: `${d}/${m}` });
     }
     if (t.due?.is_recurring) row.createSpan({ cls: "wd-todo-recur", text: "⟳" });
+    if (this.plugin.settings.gamificationEnabled) {
+      const x = row.createSpan({ cls: "wd-todo-undone" });
+      setIcon(x, "x");
+      x.setAttr("title", "Não feita — punição de XP e apaga do Todoist");
+      clickable(x, e => { e.stopPropagation(); void this.plugin.game.markUndone(t); });
+    }
     clickable(row, () => this.openTaskDetail(t));
     this.attachTaskTip(row, t);
   }
@@ -1340,6 +1527,210 @@ class TodoistController {
   }
 }
 
+// Uma ocorrência concluída é recorrente? (não pode ser apagada — quebraria a recorrência)
+function isRecurringCompleted(t: TodoistTask): boolean {
+  return t.due?.is_recurring === true;
+}
+
+// ── Gamificação: controlador único (dono no plugin, compartilhado view↔faixa) ──
+class GameController {
+  private events: GameEvent[] = [];
+  private loaded = false;
+  private busy = false;                 // colheita/markUndone em andamento
+  private pending: TodoistTask[] = [];  // concluídas na API ainda não no log (live)
+  private pendingXp = 0;
+  private subs = new Set<() => void>();
+
+  constructor(private app: App, private plugin: WerusDashboard) {}
+
+  subscribe(cb: () => void): () => void { this.subs.add(cb); return () => { this.subs.delete(cb); }; }
+  rerenderAll() { for (const cb of this.subs) cb(); }
+
+  private logFile(): TFile | null {
+    const f = this.app.vault.getAbstractFileByPath(GAME_LOG_PATH);
+    return f instanceof TFile ? f : null;
+  }
+  invalidate() { this.loaded = false; }
+  async ensureLoaded() {
+    if (this.loaded) return;
+    const f = this.logFile();
+    this.events = f ? parseGameLog(await this.app.vault.read(f)) : [];
+    this.loaded = true;
+  }
+  stats(): GameStats { return computeGameStats(this.events); }
+
+  private async writeLog() {
+    const content = buildGameLogContent(this.events);
+    const f = this.logFile();
+    if (f) { await this.app.vault.modify(f, content); return; }
+    const slash = GAME_LOG_PATH.lastIndexOf("/");
+    const folder = slash > 0 ? GAME_LOG_PATH.slice(0, slash) : "";
+    if (folder && !this.app.vault.getAbstractFileByPath(folder)) {
+      try { await this.app.vault.createFolder(folder); } catch { /* já existe */ }
+    }
+    await this.app.vault.create(GAME_LOG_PATH, content);
+  }
+
+  // Anexa eventos novos (dedup por chave). Devolve quantos entraram.
+  private async appendEvents(evs: GameEvent[]): Promise<number> {
+    await this.ensureLoaded();
+    const keys = new Set(this.events.map(e => e.key));
+    const add = evs.filter(e => !keys.has(e.key));
+    if (!add.length) return 0;
+    this.events.push(...add);
+    await this.writeLog();
+    this.rerenderAll();
+    return add.length;
+  }
+
+  private projName(t: TodoistTask): string {
+    return this.plugin.todo.projectName(t.project_id) || (t.project_id ?? "");
+  }
+  private doneEvent(t: TodoistTask): GameEvent {
+    const at = t.completed_at ?? new Date().toISOString();
+    return { date: toKey(new Date(at)), type: "feito", xp: xpForPriority(t.priority),
+      key: `${t.id}|${at}`, content: t.content, project: this.projName(t), labels: t.labels ?? [] };
+  }
+
+  // Janela do fetch: desde a última colheita (−2d de margem) ou backfill na 1ª vez.
+  private harvestSince(): string {
+    const last = this.plugin.settings.gameLastHarvest;
+    if (last && /^\d{4}-\d{2}-\d{2}$/.test(last))
+      return toKey(new Date(Date.parse(last + "T00:00:00") - 2 * 86400000));
+    return toKey(new Date(Date.now() - HARVEST_BACKFILL_DAYS * 86400000));
+  }
+  // `until` = AMANHÃ (local). completed_at da API é UTC: à noite no BRT, a conclusão de
+  // hoje já é "amanhã" em UTC → com until=hoje ela cairia fora da janela.
+  private harvestUntil(): string { return toKey(new Date(Date.now() + 86400000)); }
+
+  // "Não feito": punição (−base×fator) → log → apaga do Todoist.
+  async markUndone(t: TodoistTask) {
+    if (this.busy) return;
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) { new Notice("Configure o token do Todoist."); return; }
+    const penalty = Math.max(1, Math.round(xpForPriority(t.priority) * this.plugin.settings.gamePenaltyFactor));
+    const recurring = isRecurringCompleted(t);
+    const ok = await confirmModal(this.app, {
+      title: "Marcar como não feita?",
+      body: recurring
+        ? `"${t.content}" é recorrente — você perde ${penalty} XP, mas a tarefa NÃO é apagada (apagar quebraria a recorrência).`
+        : `"${t.content}" — você perde ${penalty} XP e a tarefa é apagada do Todoist (irreversível).`,
+      cta: `Não feita (−${penalty} XP)`,
+    });
+    if (!ok) return;
+    this.busy = true; this.rerenderAll();
+    try {
+      await this.appendEvents([{ date: toKey(new Date()), type: "nao-feito", xp: -penalty,
+        key: `${t.id}|${Date.now()}`, content: t.content, project: this.projName(t), labels: t.labels ?? [] }]);
+      if (!recurring) await deleteTodoistTask(token, t.id);
+      new Notice(`✗ Não feita: ${t.content} (−${penalty} XP)`);
+      await this.plugin.todo.fetch(true);
+    } catch (e) {
+      new Notice(`Falha: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.busy = false; this.rerenderAll();
+    }
+  }
+
+  // Colhe concluídas → log; apaga do Todoist só as NÃO-recorrentes.
+  async harvest() {
+    if (this.busy) return;
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) { new Notice("Configure o token do Todoist."); return; }
+    this.busy = true; this.rerenderAll();
+    try {
+      await this.ensureLoaded();
+      const today = toKey(new Date());
+      const completed = await fetchCompletedTasks(token, this.harvestSince(), this.harvestUntil());
+      const keys = new Set(this.events.map(e => e.key));
+      const fresh = completed.filter(t => !keys.has(`${t.id}|${t.completed_at ?? ""}`));
+      if (!fresh.length) {
+        this.plugin.settings.gameLastHarvest = today; await this.plugin.saveSettings();
+        this.pending = []; this.pendingXp = 0;
+        new Notice("Nada novo para salvar. 👍");
+        return;
+      }
+      const deletable = fresh.filter(t => !isRecurringCompleted(t));
+      const recurring = fresh.length - deletable.length;
+      const totalXp = fresh.reduce((s, t) => s + xpForPriority(t.priority), 0);
+      const ok = await confirmModal(this.app, {
+        title: `Salvar ${fresh.length} tarefa(s) concluída(s)?`,
+        body: `+${totalXp} XP no log. ${deletable.length} apagada(s) do Todoist` +
+          (recurring ? ` · ${recurring} recorrente(s) ficam (apagar quebraria a recorrência).` : "."),
+        items: fresh.slice(0, 30).map(t => ({ text: `+${xpForPriority(t.priority)} · ${t.content}` })),
+        cta: `Salvar e apagar ${deletable.length}`,
+      });
+      if (!ok) return;
+      await this.appendEvents(fresh.map(t => this.doneEvent(t)));
+      let del = 0;
+      for (const t of deletable) {
+        try { await deleteTodoistTask(token, t.id); del++; } catch { /* segue */ }
+      }
+      this.plugin.settings.gameLastHarvest = today; await this.plugin.saveSettings();
+      this.pending = []; this.pendingXp = 0;
+      new Notice(`✓ ${fresh.length} salva(s) (+${totalXp} XP) · ${del} apagada(s)`);
+      await this.plugin.todo.fetch(true);
+    } catch (e) {
+      new Notice(`Falha ao salvar: ${e instanceof Error ? e.message : String(e)}`);
+    } finally {
+      this.busy = false; this.rerenderAll();
+    }
+  }
+
+  // Conta quantas concluídas estão pendentes de salvar (live, sem apagar nada).
+  async refreshPending() {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) return;
+    try {
+      await this.ensureLoaded();
+      const completed = await fetchCompletedTasks(token, this.harvestSince(), this.harvestUntil());
+      const keys = new Set(this.events.map(e => e.key));
+      this.pending = completed.filter(t => !keys.has(`${t.id}|${t.completed_at ?? ""}`));
+      this.pendingXp = this.pending.reduce((s, t) => s + xpForPriority(t.priority), 0);
+      this.rerenderAll();
+    } catch { /* silencioso */ }
+  }
+
+  // Painel compartilhado: dashboard (faixa, ctrls sem colheita) e aba (full).
+  renderPanel(host: HTMLElement, ctrls: HTMLElement | null, opts: { full?: boolean } = {}) {
+    const s = this.stats();
+    const token = this.plugin.settings.todoistToken.trim();
+    if (opts.full && ctrls && token) {
+      const save = ctrls.createSpan({ cls: "wd-game-harvest" + (this.busy ? " wd-game-busy" : "") });
+      setIcon(save.createSpan({ cls: "wd-game-harvest-ico" }), "download");
+      save.createSpan({ text: this.busy ? "Salvando…" : "Salvar concluídas" });
+      if (this.pending.length) save.createSpan({ cls: "wd-game-pend", text: `+${this.pendingXp}` });
+      save.setAttr("title", this.pending.length
+        ? `${this.pending.length} concluída(s) aguardando salvar (+${this.pendingXp} XP)`
+        : "Buscar tarefas concluídas, salvar no log e limpar do Todoist");
+      if (!this.busy) clickable(save, () => void this.harvest());
+    }
+
+    const lvl = host.createDiv({ cls: "wd-game-level" });
+    lvl.createSpan({ cls: "wd-game-lvlnum", text: `Nível ${s.level}` });
+    lvl.createSpan({ cls: "wd-game-xp", text: `${s.totalXp} XP` });
+    const bar = host.createDiv({ cls: "wd-game-bar" });
+    bar.createDiv({ cls: "wd-game-bar-fill" }).style.width =
+      `${s.xpForNext ? Math.min(100, Math.round(s.xpIntoLevel / s.xpForNext * 100)) : 0}%`;
+    bar.setAttr("title", `${s.xpIntoLevel}/${s.xpForNext} XP para o nível ${s.level + 1}`);
+
+    const grid = host.createDiv({ cls: "wd-game-metrics" });
+    const metric = (icon: string, val: string, label: string, cls = "") => {
+      const c = grid.createDiv({ cls: "wd-game-metric " + cls });
+      const v = c.createDiv({ cls: "wd-game-metric-val" });
+      setIcon(v.createSpan({ cls: "wd-game-metric-ico" }), icon);
+      v.createSpan({ text: val });
+      c.createDiv({ cls: "wd-game-metric-lbl", text: label });
+    };
+    metric("flame", String(s.streakCurrent), `streak · recorde ${s.streakBest}`, s.streakCurrent ? "wd-game-streak-on" : "");
+    metric("zap", `${s.todayXp >= 0 ? "+" : ""}${s.todayXp}`, `XP hoje · ${s.todayCount} feita(s)`);
+
+    if (opts.full && this.pending.length)
+      host.createDiv({ cls: "wd-game-hint", text:
+        `${this.pending.length} concluída(s) aguardando salvar (+${this.pendingXp} XP) — clique em "Salvar concluídas".` });
+  }
+}
+
 class DashboardView extends ItemView {
   private weekOffset = 0;
   private navPath: string | null = null;
@@ -1350,6 +1741,7 @@ class DashboardView extends ItemView {
   private growthCumulative = false;
   private secHosts = new Map<SectionId, HTMLElement>();   // wrapper estável por seção
   private unsubTodo: (() => void) | null = null;          // cancelar inscrição no controller
+  private unsubGame: (() => void) | null = null;          // idem para a Gamificação
 
   // Estado do Syncthing (v0.10.0)
   private syncData: SyncData | null = null;
@@ -1370,6 +1762,7 @@ class DashboardView extends ItemView {
     await this.render();
     // Inscreve no controller único: mudança de estado re-renderiza só a seção Tarefas.
     this.unsubTodo = this.plugin.todo.subscribe(() => this.renderSection("todoist"));
+    this.unsubGame = this.plugin.game.subscribe(() => this.renderSection("game"));
     for (const ev of ["modify", "create", "delete", "rename"] as const)
       this.registerEvent(this.app.vault.on(ev as "modify", () => { this.plugin.invalidateVaultCache(); this.schedule(); }));
   }
@@ -1377,6 +1770,8 @@ class DashboardView extends ItemView {
   async onClose() {
     this.unsubTodo?.();
     this.unsubTodo = null;
+    this.unsubGame?.();
+    this.unsubGame = null;
     this.hideTip();
     this.plugin.todo.hideTip();
   }
@@ -1427,6 +1822,21 @@ class DashboardView extends ItemView {
     else if (id === "stats")   this.renderStats(host);
     else if (id === "todoist") this.renderTodoist(host);
     else if (id === "sync")    this.renderSync(host);
+    else if (id === "game")    this.renderGame(host);
+  }
+
+  // Faixa compacta de Gamificação no dashboard (painel completo fica na aba própria).
+  private renderGame(host: HTMLElement) {
+    if (!this.plugin.settings.gamificationEnabled || this.isHidden(SEC_GAME)) return;
+    const sec = host.createDiv({ cls: "wd-section wd-game-section" });
+    const head = sec.createDiv({ cls: "wd-sec-head" });
+    head.createDiv({ cls: "wd-sec-label", text: "GAMIFICAÇÃO" });
+    const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
+    const open = ctrls.createSpan({ cls: "wd-todo-openbtn" });
+    setIcon(open, "trophy");
+    open.setAttr("title", "Abrir a aba de Gamificação");
+    clickable(open, e => { e.stopPropagation(); void this.plugin.openGame(); });
+    this.plugin.game.renderPanel(sec, ctrls, { full: false });
   }
 
   // ── Ocultar (leitura) ─────────────────────────────────────────────────────
@@ -2302,6 +2712,8 @@ export default class WerusDashboard extends Plugin {
   settings: DashSettings = DEFAULT_SETTINGS;
   // Controlador único do Todoist (estado compartilhado entre dashboard e aba).
   todo!: TodoistController;
+  // Controlador único da Gamificação (log do cofre + stats; v0.13).
+  game!: GameController;
   // Cache do cofre (§3): montado 1x por ciclo, invalidado nos eventos do vault.
   private vaultCache: VaultCache | null = null;
 
@@ -2315,16 +2727,30 @@ export default class WerusDashboard extends Plugin {
   async onload() {
     await this.loadSettings();
     this.todo = new TodoistController(this.app, this, this);
+    this.game = new GameController(this.app, this);
     // Auto-refresh do Todoist: verifica a cada minuto; só busca se há view aberta e o
     // cache passou do TTL (5 min). registerInterval limpa o timer no unload.
     this.registerInterval(window.setInterval(() => this.todo.maybeRefresh(), 60_000));
     this.registerView(VIEW_TYPE, leaf => new DashboardView(leaf, this));
     this.registerView(TODOIST_VIEW_TYPE, leaf => new TodoistView(leaf, this));
+    this.registerView(GAME_VIEW_TYPE, leaf => new GamificationView(leaf, this));
     this.addRibbonIcon("layout-dashboard", "Abrir Werus Dashboard", () => this.open());
     this.addRibbonIcon("list-checks", "Abrir Todoist (Werus)", () => this.openTodoist());
+    this.addRibbonIcon("trophy", "Abrir Gamificação (Werus)", () => this.openGame());
     this.addCommand({ id: "open-dashboard", name: "Abrir Dashboard", callback: () => this.open() });
     this.addCommand({ id: "open-todoist", name: "Abrir Todoist", callback: () => this.openTodoist() });
+    this.addCommand({ id: "open-game", name: "Abrir Gamificação", callback: () => this.openGame() });
     this.addSettingTab(new WerusSettingTab(this.app, this));
+    // Carrega o log do cofre SÓ depois do vault indexar: no onload, getAbstractFileByPath
+    // devolve null para um arquivo que existe → cacheava events=[] (zerava no reload).
+    this.app.workspace.onLayoutReady(() => {
+      this.game.invalidate();
+      void this.game.ensureLoaded().then(() => this.game.rerenderAll());
+    });
+    // Re-renderiza quando o log muda (inclusive nossas gravações).
+    this.registerEvent(this.app.vault.on("modify", f => {
+      if (f.path === GAME_LOG_PATH) { this.game.invalidate(); void this.game.ensureLoaded().then(() => this.game.rerenderAll()); }
+    }));
   }
 
   // Todas as views (dashboard + aba Todoist) abertas, que têm controlador Todoist.
@@ -2392,7 +2818,7 @@ export default class WerusDashboard extends Plugin {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
     let needStMigration = false;   // credenciais Syncthing migrando data.json → localStorage
     // Saneamento: sectionOrder com exatamente as seções válidas, sem duplicatas.
-    const valid: SectionId[] = ["stats", "todoist", "para", "sync", "heatmap", "growth", "calendar"];
+    const valid: SectionId[] = ["stats", "game", "todoist", "para", "sync", "heatmap", "growth", "calendar"];
     const seen = new Set<SectionId>();
     const cleaned = (this.settings.sectionOrder || []).filter(
       (s): s is SectionId => valid.includes(s as SectionId) && !seen.has(s as SectionId) && (seen.add(s as SectionId), true)
@@ -2446,6 +2872,11 @@ export default class WerusDashboard extends Plugin {
       : [];
     this.settings.packageConfirm = ["always", "many", "never"].includes(this.settings.packageConfirm)
       ? this.settings.packageConfirm : "many";
+    // Gamificação (v0.13).
+    this.settings.gamificationEnabled = this.settings.gamificationEnabled !== false;
+    const pf = Number(this.settings.gamePenaltyFactor);
+    this.settings.gamePenaltyFactor = Number.isFinite(pf) && pf > 0 ? pf : 1.5;
+    this.settings.gameLastHarvest = typeof this.settings.gameLastHarvest === "string" ? this.settings.gameLastHarvest : "";
 
     // Migração 1x: grava as credenciais no localStorage e as remove do data.json.
     if (needStMigration) await this.saveSettings();
@@ -2475,6 +2906,13 @@ export default class WerusDashboard extends Plugin {
     const { workspace } = this.app;
     let leaf = workspace.getLeavesOfType(TODOIST_VIEW_TYPE)[0];
     if (!leaf) { leaf = workspace.getLeaf(false); await leaf.setViewState({ type: TODOIST_VIEW_TYPE, active: true }); }
+    workspace.revealLeaf(leaf);
+  }
+
+  async openGame() {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(GAME_VIEW_TYPE)[0];
+    if (!leaf) { leaf = workspace.getLeaf(false); await leaf.setViewState({ type: GAME_VIEW_TYPE, active: true }); }
     workspace.revealLeaf(leaf);
   }
 
@@ -2527,6 +2965,48 @@ class TodoistView extends ItemView {
     head.createDiv({ cls: "wd-sec-label", text: "TAREFAS" });
     const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
     this.plugin.todo.renderList(sec, ctrls);
+  }
+}
+
+// ── Aba dedicada de Gamificação ──────────────────────────────────────────────
+class GamificationView extends ItemView {
+  private unsub: (() => void) | null = null;
+
+  constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) {
+    super(leaf);
+  }
+
+  getViewType()    { return GAME_VIEW_TYPE; }
+  getDisplayText() { return "Gamificação"; }
+  getIcon()        { return "trophy"; }
+
+  async onOpen() {
+    this.refresh();
+    this.unsub = this.plugin.game.subscribe(() => this.refresh());
+    await this.plugin.game.ensureLoaded();
+    this.refresh();
+    void this.plugin.game.refreshPending();
+  }
+  async onClose() {
+    this.unsub?.();
+    this.unsub = null;
+  }
+
+  refresh() {
+    const root = this.contentEl;
+    root.empty();
+    root.addClass("wd-root", "wd-game-view");
+
+    const h = root.createDiv({ cls: "wd-header" });
+    const txt = h.createDiv({ cls: "wd-header-text" });
+    txt.createDiv({ cls: "wd-date", text: todayBR() });
+    txt.createDiv({ cls: "wd-title", text: "Gamificação" });
+
+    const sec = root.createDiv({ cls: "wd-section wd-game-section" });
+    const head = sec.createDiv({ cls: "wd-sec-head" });
+    head.createDiv({ cls: "wd-sec-label", text: "PROGRESSO" });
+    const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
+    this.plugin.game.renderPanel(sec, ctrls, { full: true });
   }
 }
 
@@ -2933,6 +3413,36 @@ class WerusSettingTab extends PluginSettingTab {
           });
         });
     }
+
+    // ── Gamificação ──────────────────────────────────────────────────────────
+    containerEl.createEl("h3", { text: "Gamificação" });
+    containerEl.createEl("p", {
+      cls: "setting-item-description",
+      text: "Tarefas concluídas viram XP/nível/streak (aba Gamificação + faixa no dashboard). \"Salvar concluídas\" grava no log do cofre (20.Areas/Gamificação.md) e limpa do Todoist. O botão ✗ marca uma tarefa como não feita (punição em XP) e a apaga.",
+    });
+
+    new Setting(containerEl)
+      .setName("Ativar gamificação")
+      .setDesc("Mostra a seção/aba de Gamificação e o botão \"não feita\" nas tarefas.")
+      .addToggle(t => t
+        .setValue(plugin.settings.gamificationEnabled)
+        .onChange(async v => {
+          plugin.settings.gamificationEnabled = v;
+          await plugin.saveSettings();
+          plugin.rerenderDashboards();
+          plugin.game.rerenderAll();
+        }));
+
+    new Setting(containerEl)
+      .setName("Penalidade do \"não feito\"")
+      .setDesc("Multiplica a base da prioridade ao marcar como não feita. Ex.: 1,5 = perde 50% a mais do que ganharia.")
+      .addText(t => t
+        .setPlaceholder("1.5")
+        .setValue(String(plugin.settings.gamePenaltyFactor))
+        .onChange(async v => {
+          const n = Number(v.replace(",", "."));
+          if (Number.isFinite(n) && n > 0) { plugin.settings.gamePenaltyFactor = n; await plugin.saveSettings(); }
+        }));
 
     // ── Pacotes de tarefas ───────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Pacotes de tarefas" });

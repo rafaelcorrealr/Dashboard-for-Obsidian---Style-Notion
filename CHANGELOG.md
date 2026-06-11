@@ -6,6 +6,18 @@
 
 ---
 
+## [0.13.0] — alpha — 2026-06-10
+
+**Gamificação — XP, nível e streak a partir do Todoist (1ª fase do épico v0.13).**
+
+Aba própria **Gamificação** (ícone troféu + comando "Abrir Gamificação") e uma **faixa no dashboard** (seção ocultável/reordenável). Tarefas concluídas viram XP; o histórico mora num **log no cofre** (`20.Areas/Gamificação.md`), que é a fonte canônica — então não depende do limite de ~3 meses da API do Todoist.
+
+- **"Salvar concluídas"** (botão na aba): lê as tarefas concluídas do Todoist (inclusive as feitas no app nativo), grava no log com o XP e **apaga do Todoist** (mantém a conta limpa). Tarefas **recorrentes** são registradas mas **não apagadas** (apagar quebraria a recorrência). Sempre pede confirmação com a lista.
+- **Botão "não feito" (✗)** em cada tarefa: registra a falha com **punição** (XP negativo = base da prioridade × fator configurável, padrão 1,5) e apaga a tarefa. Sempre confirma.
+- **Pontuação:** por prioridade (p1=8 / p2=5 / p3=3 / p4=1). **Nível** = `⌊√(XP/100)⌋` com barra de progresso. **Streak** (dias seguidos com ≥1 tarefa) atual + recorde. XP de hoje.
+- **Configurações → Gamificação:** ligar/desligar + fator de punição.
+- Painel e faixa compartilham o mesmo estado (concluir/salvar reflete na hora nas duas telas).
+
 ## [0.12.12] — alpha — 2026-06-10
 
 **Saúde técnica (acessibilidade) — fecha o refactor.**

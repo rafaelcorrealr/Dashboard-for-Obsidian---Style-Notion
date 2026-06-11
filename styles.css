@@ -1922,3 +1922,56 @@ body {
   font-size: 11px;
   color: var(--wd-text-muted);
 }
+
+/* ── Gamificação (v0.13) ─────────────────────────────────────────────────── */
+.wd-game-level { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; margin: 2px 0 6px; }
+.wd-game-lvlnum { font-family: var(--font-monospace, monospace); font-weight: 700; font-size: 16px; color: var(--wd-text); }
+.wd-game-xp { font-size: 12px; color: var(--wd-text-muted); }
+.wd-game-bar {
+  height: 8px; border-radius: 6px; overflow: hidden;
+  background: var(--wd-fill); border: 1px solid var(--wd-border);
+}
+.wd-game-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #FF4B2B, #F59E0B, #10B981);
+  transition: width .35s ease;
+}
+.wd-game-metrics { display: flex; gap: 8px; margin-top: 10px; }
+.wd-game-metric {
+  flex: 1; min-width: 0; padding: 8px 10px;
+  border: 1px solid var(--wd-border); border-radius: 8px; background: var(--wd-bg-alt);
+}
+.wd-game-metric-val { display: flex; align-items: center; gap: 5px; font-weight: 700; font-size: 15px; color: var(--wd-text); }
+.wd-game-metric-ico { display: inline-flex; color: var(--wd-text-muted); }
+.wd-game-metric-ico svg { width: 15px; height: 15px; }
+.wd-game-metric-lbl { font-size: 10px; color: var(--wd-text-muted); margin-top: 2px; }
+.wd-game-streak-on .wd-game-metric-val { color: #F59E0B; }
+.wd-game-streak-on .wd-game-metric-ico { color: #FF6B35; }
+
+/* Botão "Salvar concluídas" no cabeçalho da aba */
+.wd-game-harvest {
+  display: inline-flex; align-items: center; gap: 5px;
+  padding: 3px 9px; border-radius: 6px; cursor: pointer;
+  font-size: 12px; color: var(--wd-text);
+  background: var(--wd-fill); border: 1px solid var(--wd-border);
+  transition: background .15s, border-color .15s;
+}
+.wd-game-harvest:hover { border-color: var(--interactive-accent); }
+.wd-game-harvest-ico { display: inline-flex; }
+.wd-game-harvest-ico svg { width: 13px; height: 13px; }
+.wd-game-busy { opacity: .6; pointer-events: none; }
+.wd-game-pend {
+  font-size: 10px; font-weight: 700; padding: 0 5px; border-radius: 8px;
+  background: var(--interactive-accent); color: #fff;
+}
+.wd-game-hint { margin-top: 10px; font-size: 11px; color: var(--wd-text-muted); }
+
+/* Botão "não feito" (✗) nas linhas de tarefa */
+.wd-todo-undone {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 18px; height: 18px; flex-shrink: 0; border-radius: 4px;
+  color: var(--wd-text-faint); cursor: pointer; opacity: 0; transition: opacity .15s, color .15s, background .15s;
+}
+.wd-todo-undone svg { width: 13px; height: 13px; }
+.wd-todo-row:hover .wd-todo-undone { opacity: .6; }
+.wd-todo-undone:hover { opacity: 1; color: #EF4444; background: rgba(239, 68, 68, .12); }
