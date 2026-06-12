@@ -61,7 +61,7 @@ Transforma tarefas concluídas em **XP** e níveis. Aba própria **Gamificação
 - **"Salvar concluídas":** lê as tarefas concluídas do Todoist, grava no log com o XP e **apaga do Todoist** (mantém a conta limpa). Tarefas **recorrentes** são registradas mas **não apagadas**. Sempre confirma com a lista.
 - **Botão "não feito" (✗)** por tarefa: registra a falha com **punição** (XP negativo = base da prioridade × fator configurável) e apaga. Sempre confirma.
 - **Pontuação** por prioridade (p1=8 / p2=5 / p3=3 / p4=1). **Nível** = `⌊√(XP/100)⌋` com **barra de progresso** (cor sólida do tema + marcações a cada 10%). **Streak** (dias seguidos com ≥1 tarefa) atual + recorde. **XP de hoje**.
-- **Gráfico de XP por dia** (últimos 30 / 15 dias) e **níveis por projeto e por etiqueta** (top 8 por XP, cada um com nível + mini-barra) — na aba.
+- **Gráfico de XP por dia** (últimos 30 / 15 dias, em **barras ou linha com pontos**) e **níveis por projeto e por etiqueta** (top 8 por XP, cada um com nível + mini-barra; escopos apagados no Todoist ganham um aviso "não existe mais") — na aba. A curva de níveis e o design das conquistas estão documentados em `10.Projects/Werus Dashboard/Gamificação — Níveis e Conquistas.md`.
 - **Configurações → Gamificação:** ligar/desligar + fator de punição.
 
 ### Sincronização (Syncthing)
@@ -172,5 +172,5 @@ Após compilar, recarregue o Obsidian: `Ctrl+R`.
 
 ## Versão atual
 
-**v0.13.4 (alpha)** — ver [CHANGELOG](CHANGELOG.md) para o histórico de desenvolvimento.
+**v0.13.5 (alpha)** — ver [CHANGELOG](CHANGELOG.md) para o histórico de desenvolvimento.
 A primeira versão estável será `1.0.0`.
