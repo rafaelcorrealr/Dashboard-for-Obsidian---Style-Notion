@@ -75,6 +75,8 @@ interface DashSettings {
   gamificationEnabled: boolean;  // mostra a seção/aba do Game
   gamePenaltyFactor: number;     // "não feito" tira base × fator
   gameLastHarvest: string;       // ISO da última colheita de concluídas (limita o fetch)
+  gameChartMode: "bars" | "line";    // gráfico de XP por dia: barras ou linha com pontos
+  growthChartMode: "bars" | "line";  // gráfico de Crescimento do cofre: barras ou linha
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
@@ -100,6 +102,8 @@ const DEFAULT_SETTINGS: DashSettings = {
   gamificationEnabled: true,
   gamePenaltyFactor: 1.5,
   gameLastHarvest: "",
+  gameChartMode: "bars",
+  growthChartMode: "bars",
 };
 
 interface ParaSection {
@@ -555,15 +559,52 @@ interface GameStats {
   byLabel: Map<string, number>;     // só "feito"
 }
 
+// Base da curva de nível: XP total para o nível L = XP_LEVEL_BASE · L² (quadrática, SEM teto).
+// Mude esta constante para encurtar/alongar a progressão (ver doc "Gamificação — Níveis e Conquistas").
+const XP_LEVEL_BASE = 100;
 function gameLevel(xp: number): number {
-  return xp <= 0 ? 0 : Math.floor(Math.sqrt(xp / 100));
+  return xp <= 0 ? 0 : Math.floor(Math.sqrt(xp / XP_LEVEL_BASE));
 }
-// Nível + progresso para um total de XP (geral ou por escopo). XP p/ nível L = 100·L².
+// Nível + progresso para um total de XP (geral ou por escopo). XP p/ nível L = BASE·L².
 function levelInfo(xp: number): { level: number; into: number; forNext: number; pct: number } {
   const level = gameLevel(xp);
-  const into = Math.max(0, xp) - 100 * level * level;
-  const forNext = 100 * (2 * level + 1);
+  const into = Math.max(0, xp) - XP_LEVEL_BASE * level * level;
+  const forNext = XP_LEVEL_BASE * (2 * level + 1);
   return { level, into, forNext, pct: forNext ? Math.min(100, Math.round(into / forNext * 100)) : 0 };
+}
+
+// Gráfico de linha com pontos (SVG responsivo) — reusado pelo XP/dia e pelo Crescimento.
+// A linha é um <polyline> com stroke não-escalável (espessura uniforme apesar do viewBox
+// esticado); os pontos são divs HTML posicionados em % (ficam redondos e levam o tooltip).
+interface LinePoint { value: number; label: string; isToday: boolean; tip: string }
+function renderLineChart(parent: HTMLElement, points: LinePoint[]): void {
+  const n = points.length;
+  const max = Math.max(...points.map(p => Math.max(0, p.value)), 1);
+  const xPct = (i: number) => n <= 1 ? 0 : (i / (n - 1)) * 100;
+  const yPct = (v: number) => (1 - Math.max(0, v) / max) * 100;
+  const chart = parent.createDiv({ cls: "wd-line-chart" });
+  const wrap = chart.createDiv({ cls: "wd-line-wrap" });
+  const svgNS = "http://www.w3.org/2000/svg";
+  const svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("viewBox", "0 0 100 100");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "wd-line-svg");
+  const poly = document.createElementNS(svgNS, "polyline");
+  poly.setAttribute("points", points.map((p, i) => `${xPct(i)},${yPct(p.value)}`).join(" "));
+  poly.setAttribute("class", "wd-line-path");
+  svg.appendChild(poly);
+  wrap.appendChild(svg);
+  points.forEach((p, i) => {
+    const dot = wrap.createDiv({ cls: "wd-line-dot" + (p.isToday ? " wd-line-dot-today" : "") });
+    dot.style.left = `${xPct(i)}%`;
+    dot.style.top = `${yPct(p.value)}%`;
+    dot.setAttr("title", p.tip);
+  });
+  const lbls = chart.createDiv({ cls: "wd-line-lbls" });
+  points.forEach((p, i) => {
+    const show = i === 0 || i === n - 1 || i % 7 === 0;
+    lbls.createDiv({ cls: "wd-line-lbl", text: show ? p.label : "" });
+  });
 }
 
 // Campos separados por TAB (robusto: conteúdo/chave não contêm tab; a chave pode
@@ -659,8 +700,8 @@ function computeGameStats(events: GameEvent[]): GameStats {
   const today = byDay.get(toKey(new Date())) ?? { xp: 0, count: 0 };
   return {
     totalXp, level,
-    xpIntoLevel: totalXp - 100 * level * level,
-    xpForNext: 100 * (2 * level + 1),
+    xpIntoLevel: totalXp - XP_LEVEL_BASE * level * level,
+    xpForNext: XP_LEVEL_BASE * (2 * level + 1),
     streakCurrent, streakBest,
     todayXp: today.xp, todayCount: today.count,
     byDay, byProject, byLabel,
@@ -973,6 +1014,9 @@ class TodoistController {
 
   // Nome do projeto pelo id (reusado pela Gamificação). Vazio se desconhecido.
   projectName(id?: string): string { return (id && this.projectMap.get(id)) || ""; }
+  // Nomes de projetos/etiquetas que existem hoje no Todoist (para sinalizar os que sumiram).
+  knownProjects(): Set<string> { return new Set(this.projectMap.values()); }
+  knownLabels(): Set<string> { return new Set(this.labelColors.keys()); }
 
   private dayRange(): 3 | 7 {
     return this.plugin.settings.todoistDayRange === 3 ? 3 : 7;
@@ -1759,33 +1803,43 @@ class GameController {
   // Reusa a barra de XP (`.wd-game-bar`) e `levelInfo(xp)`.
   private renderScopeLevels(host: HTMLElement, s: GameStats) {
     const TOP = 8;
-    const section = (title: string, data: Map<string, number>, prefix = "", renameEmpty?: string) => {
+    const section = (title: string, data: Map<string, number>, prefix: string, renameEmpty: string | undefined, known: Set<string>) => {
       const top = [...data.entries()]
         .filter(([, xp]) => xp > 0)
         .sort((a, b) => b[1] - a[1])
         .slice(0, TOP);
       if (!top.length) return;
+      // Só avisa "não existe mais" se o Todoist já carregou os escopos atuais (offline/sem token → sem aviso).
+      const ready = known.size > 0;
       const sec = host.createDiv({ cls: "wd-game-scopesec" });
       sec.createDiv({ cls: "wd-game-chart-title", text: title });
       for (const [name, xp] of top) {
         const li = levelInfo(xp);
+        const gone = ready && name !== "—" && !known.has(name);
         const item = sec.createDiv({ cls: "wd-game-scope-item" });
         const head = item.createDiv({ cls: "wd-game-scope-head" });
-        head.createSpan({ cls: "wd-game-scope-name",
+        const left = head.createDiv({ cls: "wd-game-scope-left" });
+        left.createSpan({ cls: "wd-game-scope-name" + (gone ? " wd-dim" : ""),
           text: prefix + (renameEmpty && name === "—" ? renameEmpty : name) });
+        if (gone) {
+          const g = left.createSpan({ cls: "wd-game-scope-gone" });
+          setIcon(g, "unlink");
+          g.setAttr("title", "Não existe mais no Todoist");
+        }
         head.createSpan({ cls: "wd-game-scope-meta", text: `Nv ${li.level} · ${xp} XP` });
         const bar = item.createDiv({ cls: "wd-game-bar wd-game-bar-mini" });
         bar.createDiv({ cls: "wd-game-bar-fill" }).style.width = `${li.pct}%`;
         bar.setAttr("title", `${li.into}/${li.forNext} XP para o nível ${li.level + 1}`);
       }
     };
-    section("Níveis por projeto", s.byProject, "", "Sem projeto");
-    section("Níveis por etiqueta", s.byLabel, "@");
+    section("Níveis por projeto", s.byProject, "", "Sem projeto", this.plugin.todo.knownProjects());
+    section("Níveis por etiqueta", s.byLabel, "@", undefined, this.plugin.todo.knownLabels());
   }
 
-  // Gráfico de XP por dia (últimos N dias) — reusa o visual de barras do "Crescimento".
+  // Gráfico de XP por dia (últimos N dias) — barras ou linha com pontos (settings.gameChartMode).
   private renderXpChart(host: HTMLElement, s: GameStats, phone: boolean) {
     const DAYS = phone ? 15 : 30;
+    const mode = this.plugin.settings.gameChartMode;
     const todayKey = toKey(new Date());
     const days: { key: string; xp: number; count: number; label: string }[] = [];
     for (let i = DAYS - 1; i >= 0; i--) {
@@ -1795,9 +1849,24 @@ class GameController {
       const agg = s.byDay.get(key);
       days.push({ key, xp: agg?.xp ?? 0, count: agg?.count ?? 0, label: `${day}/${m}` });
     }
-    const max = Math.max(...days.map(d => Math.max(0, d.xp)), 1);   // só XP positivo dimensiona
     const sec = host.createDiv({ cls: "wd-game-chartsec" });
-    sec.createDiv({ cls: "wd-game-chart-title", text: `XP nos últimos ${DAYS} dias` });
+    const hd = sec.createDiv({ cls: "wd-game-charthd" });
+    hd.createSpan({ cls: "wd-game-chart-title", text: `XP nos últimos ${DAYS} dias` });
+    const ctrls = hd.createDiv({ cls: "wd-sec-ctrls" });
+    const mkBtn = (m: "bars" | "line", label: string, title: string) => {
+      const b = ctrls.createSpan({ cls: "wd-view-btn" + (mode === m ? " wd-view-active" : ""), text: label });
+      b.setAttr("title", title); b.setAttr("aria-pressed", String(mode === m));
+      clickable(b, async e => { e.stopPropagation(); this.plugin.settings.gameChartMode = m; await this.plugin.saveSettings(); this.rerenderAll(); });
+    };
+    mkBtn("bars", "barras", "Gráfico de barras");
+    mkBtn("line", "linha", "Linha com pontos");
+
+    const tip = (d: { xp: number; count: number; label: string }) => `${d.label}: ${d.xp >= 0 ? "+" : ""}${d.xp} XP · ${d.count} feita(s)`;
+    if (mode === "line") {
+      renderLineChart(sec, days.map(d => ({ value: d.xp, label: d.label, isToday: d.key === todayKey, tip: tip(d) })));
+      return;
+    }
+    const max = Math.max(...days.map(d => Math.max(0, d.xp)), 1);   // só XP positivo dimensiona
     const chart = sec.createDiv({ cls: "wd-growth-chart" });
     days.forEach(({ key, xp, count, label }, idx) => {
       const col = chart.createDiv({ cls: "wd-growth-col" + (key === todayKey ? " wd-growth-today" : "") });
@@ -1805,7 +1874,7 @@ class GameController {
       const empty = xp <= 0;
       const bar = barArea.createDiv({ cls: "wd-growth-bar" + (empty ? " wd-growth-bar-zero" : "") });
       bar.style.height = empty ? "3px" : `${Math.max(5, Math.round((xp / max) * 100))}%`;
-      bar.setAttr("title", `${label}: ${xp >= 0 ? "+" : ""}${xp} XP · ${count} feita(s)`);
+      bar.setAttr("title", tip({ xp, count, label }));
       const showLbl = idx === 0 || idx === DAYS - 1 || idx % 7 === 0;
       col.createDiv({ cls: "wd-growth-lbl", text: showLbl ? label : "" });
     });
@@ -2584,6 +2653,14 @@ permissions:
     btnCum.setAttr("title", "Total acumulado no período");
     btnCum.setAttr("aria-pressed", String(this.growthCumulative));
     clickable(btnCum, e => { e.stopPropagation(); this.growthCumulative = true; this.render(); });
+    const cm = this.plugin.settings.growthChartMode;
+    const mkChartBtn = (m: "bars" | "line", label: string, title: string) => {
+      const b = ctrls.createSpan({ cls: "wd-view-btn" + (cm === m ? " wd-view-active" : ""), text: label });
+      b.setAttr("title", title); b.setAttr("aria-pressed", String(cm === m));
+      clickable(b, async e => { e.stopPropagation(); this.plugin.settings.growthChartMode = m; await this.plugin.saveSettings(); this.render(); });
+    };
+    mkChartBtn("bars", "barras", "Gráfico de barras");
+    mkChartBtn("line", "linha", "Linha com pontos");
 
     // Notas por data de criação (do cache).
     const counts = this.plugin.getVaultCache().ctimeByDay;
@@ -2618,15 +2695,22 @@ permissions:
     info.createSpan({ cls: "wd-growth-total", text: `${this.growthCumulative ? entries[entries.length - 1].displayVal : total}` });
     info.createSpan({ cls: "wd-growth-period", text: this.growthCumulative ? `notas acumuladas (${DAYS} dias)` : `notas criadas nos últimos ${DAYS} dias` });
 
+    const tipFor = (e: DayEntry) => `${e.label}: ${this.growthCumulative ? e.displayVal + " total" : e.count + " nota(s)"}`;
+    if (this.plugin.settings.growthChartMode === "line") {
+      renderLineChart(sec, entries.map(e => ({ value: e.displayVal, label: e.label, isToday: e.key === todayKey, tip: tipFor(e) })));
+      return;
+    }
+
     // Gráfico de barras
     const chart = sec.createDiv({ cls: "wd-growth-chart" });
-    entries.forEach(({ key, count, label, displayVal }, idx) => {
+    entries.forEach((e, idx) => {
+      const { key, label, displayVal } = e;
       const col = chart.createDiv({ cls: "wd-growth-col" + (key === todayKey ? " wd-growth-today" : "") });
       const barArea = col.createDiv({ cls: "wd-growth-bar-area" });
       const isEmpty = displayVal === 0;
       const bar = barArea.createDiv({ cls: "wd-growth-bar" + (isEmpty ? " wd-growth-bar-zero" : "") });
       bar.style.height = isEmpty ? "3px" : `${Math.max(5, Math.round((displayVal / max) * 100))}%`;
-      if (!isEmpty) bar.setAttr("title", `${label}: ${this.growthCumulative ? displayVal + " total" : count + " nota(s)"}`);
+      if (!isEmpty) bar.setAttr("title", tipFor(e));
 
       const showLbl = idx === 0 || idx === 7 || idx === 14 || idx === 21 || idx === 29 || key === todayKey;
       col.createDiv({ cls: "wd-growth-lbl", text: showLbl ? label : "" });
@@ -2985,6 +3069,8 @@ export default class WerusDashboard extends Plugin {
     const pf = Number(this.settings.gamePenaltyFactor);
     this.settings.gamePenaltyFactor = Number.isFinite(pf) && pf > 0 ? pf : 1.5;
     this.settings.gameLastHarvest = typeof this.settings.gameLastHarvest === "string" ? this.settings.gameLastHarvest : "";
+    this.settings.gameChartMode = this.settings.gameChartMode === "line" ? "line" : "bars";
+    this.settings.growthChartMode = this.settings.growthChartMode === "line" ? "line" : "bars";
 
     // Migração 1x: grava as credenciais no localStorage e as remove do data.json.
     if (needStMigration) await this.saveSettings();

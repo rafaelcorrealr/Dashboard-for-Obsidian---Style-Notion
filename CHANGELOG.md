@@ -6,6 +6,15 @@
 
 ---
 
+## [0.13.5] — alpha — 2026-06-12
+
+**Gamificação — modos de gráfico, aviso de projeto/etiqueta removidos, e doc dos níveis.**
+
+- **Gráficos com modos:** o gráfico de **XP por dia** (Gamificação) e o de **Crescimento do cofre** (dashboard) ganharam um toggle **barras / linha com pontos** (cada um lembra a sua escolha). A linha é um gráfico responsivo com pontos e tooltips.
+- **Aviso "não existe mais no Todoist":** nos níveis por projeto/etiqueta, os escopos que foram apagados no Todoist aparecem com um ícone e o nome esmaecido. (Só sinaliza quando o Todoist já carregou; renomear um projeto/etiqueta também faz o nome antigo aparecer como inexistente.)
+- **Documentação:** novo doc **"Gamificação — Níveis e Conquistas"** explicando a fórmula dos níveis (`nível = ⌊√(XP/100)⌋`, sem teto), a tabela de XP por nível e onde mudar no código — além do **design proposto das conquistas** (para uma versão futura).
+- Interno: base da curva de nível extraída para a constante `XP_LEVEL_BASE` (facilita ajustar a progressão).
+
 ## [0.13.4] — alpha — 2026-06-11
 
 **Modo "Android" por largura do painel (não mais por dispositivo).**

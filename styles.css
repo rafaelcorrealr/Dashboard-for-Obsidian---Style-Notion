@@ -1982,9 +1982,37 @@ body {
 .wd-game-hint { margin-top: 10px; font-size: 11px; color: var(--wd-text-muted); }
 .wd-game-next { margin-top: 4px; font-size: 11px; color: var(--wd-text-muted); }
 .wd-game-chartsec { margin-top: 14px; }
+.wd-game-charthd { display: flex; align-items: baseline; justify-content: space-between; gap: 8px; }
+.wd-game-charthd .wd-game-chart-title { margin-bottom: 0; }
 .wd-game-chart-title {
   font-family: var(--font-monospace, monospace); font-size: 10px; letter-spacing: 1px;
   color: var(--wd-text-faint); margin-bottom: 6px;
+}
+
+/* Gráfico de linha com pontos (XP/dia e Crescimento) */
+.wd-line-chart {
+  background: var(--wd-bg-alt); border: 1px solid var(--wd-border);
+  border-radius: 10px; padding: 12px 10px 0; margin-top: 6px;
+}
+.wd-line-wrap { position: relative; height: 60px; width: 100%; }
+.wd-line-svg { position: absolute; inset: 0; width: 100%; height: 100%; overflow: visible; }
+.wd-line-path {
+  fill: none; stroke: var(--interactive-accent); stroke-width: 2px;
+  vector-effect: non-scaling-stroke; stroke-linejoin: round; stroke-linecap: round;
+}
+.wd-line-dot {
+  position: absolute; width: 5px; height: 5px; border-radius: 50%;
+  background: var(--interactive-accent); transform: translate(-50%, -50%); cursor: default;
+}
+.wd-line-dot-today {
+  width: 7px; height: 7px; background: var(--wd-accent-hover);
+  box-shadow: 0 0 0 2px var(--wd-bg-alt);
+}
+.wd-line-lbls { display: flex; gap: 2px; }
+.wd-line-lbl {
+  flex: 1; font-family: var(--font-monospace, monospace); font-size: 7px;
+  color: var(--wd-text-faint); text-align: center; padding: 3px 0 7px;
+  height: 20px; white-space: nowrap; overflow: hidden;
 }
 
 /* Níveis por projeto/etiqueta (aba): nome + Nv N + mini-barra + XP */
@@ -1995,10 +2023,14 @@ body {
   display: flex; align-items: baseline; justify-content: space-between;
   gap: 8px; margin-bottom: 3px;
 }
+.wd-game-scope-left { display: flex; align-items: center; gap: 4px; min-width: 0; }
 .wd-game-scope-name {
   font-size: 12px; color: var(--wd-text);
   white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
 }
+.wd-game-scope-name.wd-dim { opacity: .55; }
+.wd-game-scope-gone { display: inline-flex; color: var(--wd-text-faint); flex-shrink: 0; }
+.wd-game-scope-gone svg { width: 12px; height: 12px; }
 .wd-game-scope-meta {
   font-size: 11px; color: var(--wd-text-muted); white-space: nowrap;
   font-family: var(--font-monospace, monospace);
