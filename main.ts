@@ -1707,7 +1707,7 @@ class GameController {
   }
 
   // Painel compartilhado: dashboard (faixa, ctrls sem colheita) e aba (full).
-  renderPanel(host: HTMLElement, ctrls: HTMLElement | null, opts: { full?: boolean } = {}) {
+  renderPanel(host: HTMLElement, ctrls: HTMLElement | null, opts: { full?: boolean; phone?: boolean } = {}) {
     const s = this.stats();
     const token = this.plugin.settings.todoistToken.trim();
     if (opts.full && ctrls && token) {
@@ -1751,7 +1751,7 @@ class GameController {
       host.createDiv({ cls: "wd-game-hint", text:
         `${this.pending.length} concluída(s) aguardando salvar (+${this.pendingXp} XP) — clique em "Salvar concluídas".` });
 
-    if (opts.full) this.renderXpChart(host, s);
+    if (opts.full) this.renderXpChart(host, s, !!opts.phone);
     if (opts.full) this.renderScopeLevels(host, s);
   }
 
@@ -1784,8 +1784,8 @@ class GameController {
   }
 
   // Gráfico de XP por dia (últimos N dias) — reusa o visual de barras do "Crescimento".
-  private renderXpChart(host: HTMLElement, s: GameStats) {
-    const DAYS = Platform.isPhone ? 15 : 30;
+  private renderXpChart(host: HTMLElement, s: GameStats, phone: boolean) {
+    const DAYS = phone ? 15 : 30;
     const todayKey = toKey(new Date());
     const days: { key: string; xp: number; count: number; label: string }[] = [];
     for (let i = DAYS - 1; i >= 0; i--) {
@@ -1812,7 +1812,30 @@ class GameController {
   }
 }
 
-class DashboardView extends ItemView {
+const PHONE_MAX = 600;   // px — abaixo disso o painel entra em "modo Android"
+// "Modo Android" por LARGURA do painel (não por dispositivo). Mede o container;
+// antes do layout (clientWidth 0) cai no dispositivo. Platform.isPhone reforça
+// para o celular real seguir em modo Android em qualquer largura/orientação.
+function isPhoneWidth(el: HTMLElement): boolean {
+  const w = el.clientWidth;
+  return Platform.isPhone || (w > 0 && w <= PHONE_MAX);
+}
+
+// Base das views: observa a largura do painel e re-renderiza ao cruzar o limiar.
+abstract class WdView extends ItemView {
+  protected phone = false;
+  protected abstract rerender(): void;
+  protected initPhoneWatch() {
+    const ro = new ResizeObserver(() => {
+      const p = isPhoneWidth(this.contentEl);
+      if (p !== this.phone) { this.phone = p; this.rerender(); }   // só ao CRUZAR o limiar → sem loop
+    });
+    ro.observe(this.contentEl);
+    this.register(() => ro.disconnect());
+  }
+}
+
+class DashboardView extends WdView {
   private weekOffset = 0;
   private navPath: string | null = null;
   private timer: ReturnType<typeof setTimeout> | null = null;
@@ -1846,6 +1869,7 @@ class DashboardView extends ItemView {
     this.unsubGame = this.plugin.game.subscribe(() => this.renderSection("game"));
     for (const ev of ["modify", "create", "delete", "rename"] as const)
       this.registerEvent(this.app.vault.on(ev as "modify", () => { this.plugin.invalidateVaultCache(); this.schedule(); }));
+    this.initPhoneWatch();
   }
 
   async onClose() {
@@ -1860,6 +1884,7 @@ class DashboardView extends ItemView {
   // Re-render público — chamado pelo plugin quando a configuração muda na aba
   // de Configurações (ordem das seções, ocultar/mostrar, fontes da Semana).
   refresh() { void this.render(); }
+  protected rerender() { void this.render(); }
 
   private schedule() {
     if (this.timer) clearTimeout(this.timer);
@@ -1878,6 +1903,8 @@ class DashboardView extends ItemView {
     const root = this.contentEl;
     root.empty();
     root.addClass("wd-root");
+    this.phone = isPhoneWidth(this.contentEl);
+    root.toggleClass("wd-phone", this.phone);
     root.toggleClass("wd-compact", this.plugin.settings.compact);
 
     this.renderHeader(root);
@@ -1917,7 +1944,7 @@ class DashboardView extends ItemView {
     setIcon(open, "trophy");
     open.setAttr("title", "Abrir a aba de Gamificação");
     clickable(open, e => { e.stopPropagation(); void this.plugin.openGame(); });
-    this.plugin.game.renderPanel(sec, ctrls, { full: false });
+    this.plugin.game.renderPanel(sec, ctrls, { full: false, phone: this.phone });
   }
 
   // ── Ocultar (leitura) ─────────────────────────────────────────────────────
@@ -2032,7 +2059,7 @@ class DashboardView extends ItemView {
 
     const sec = root.createDiv({ cls: "wd-section wd-cal-section" });
     const nav = sec.createDiv({ cls: "wd-cal-nav-bar" });
-    const phone = Platform.isPhone;
+    const phone = this.phone;
 
     // Celular: janela de 3 dias = ontem · hoje · amanhã (weekOffset pagina de 3 em 3).
     const dayAnchor = new Date();
@@ -2367,7 +2394,7 @@ permissions:
 
   private renderHeatmap(root: HTMLElement) {
     if (this.isHidden(SEC_HEAT)) return;
-    if (Platform.isPhone) return;   // heatmap (ano inteiro) ocultado no celular
+    if (this.phone) return;   // heatmap (ano inteiro) ocultado quando o painel é estreito
 
     const sec = root.createDiv({ cls: "wd-section wd-heat-section" });
     const head = sec.createDiv({ cls: "wd-sec-head" });
@@ -2561,8 +2588,8 @@ permissions:
     // Notas por data de criação (do cache).
     const counts = this.plugin.getVaultCache().ctimeByDay;
 
-    // Últimos N dias (menos no celular)
-    const DAYS = Platform.isPhone ? 15 : 30;
+    // Últimos N dias (menos quando o painel é estreito)
+    const DAYS = this.phone ? 15 : 30;
     const days: { key: string; count: number; label: string }[] = [];
     for (let i = DAYS - 1; i >= 0; i--) {
       const d = new Date();
@@ -3008,7 +3035,7 @@ export default class WerusDashboard extends Plugin {
 // ── Aba dedicada do Todoist ──────────────────────────────────────────────────
 // Hub do Todoist na área central (não é sidebar): lançador de pacotes + a mesma
 // lista de tarefas do dashboard (via TodoistController compartilhado).
-class TodoistView extends ItemView {
+class TodoistView extends WdView {
   private unsubTodo: (() => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) {
@@ -3022,17 +3049,21 @@ class TodoistView extends ItemView {
   async onOpen() {
     this.refresh();
     this.unsubTodo = this.plugin.todo.subscribe(() => this.refresh());
+    this.initPhoneWatch();
   }
   async onClose() {
     this.unsubTodo?.();
     this.unsubTodo = null;
     this.plugin.todo.hideTip();
   }
+  protected rerender() { this.refresh(); }
 
   refresh() {
     const root = this.contentEl;
     root.empty();
     root.addClass("wd-root", "wd-todoist-view");
+    this.phone = isPhoneWidth(this.contentEl);
+    root.toggleClass("wd-phone", this.phone);
 
     const h = root.createDiv({ cls: "wd-header" });
     const txt = h.createDiv({ cls: "wd-header-text" });
@@ -3050,7 +3081,7 @@ class TodoistView extends ItemView {
 }
 
 // ── Aba dedicada de Gamificação ──────────────────────────────────────────────
-class GamificationView extends ItemView {
+class GamificationView extends WdView {
   private unsub: (() => void) | null = null;
 
   constructor(leaf: WorkspaceLeaf, private plugin: WerusDashboard) {
@@ -3067,16 +3098,20 @@ class GamificationView extends ItemView {
     await this.plugin.game.ensureLoaded();
     this.refresh();
     void this.plugin.game.refreshPending();
+    this.initPhoneWatch();
   }
   async onClose() {
     this.unsub?.();
     this.unsub = null;
   }
+  protected rerender() { this.refresh(); }
 
   refresh() {
     const root = this.contentEl;
     root.empty();
     root.addClass("wd-root", "wd-game-view");
+    this.phone = isPhoneWidth(this.contentEl);
+    root.toggleClass("wd-phone", this.phone);
 
     const h = root.createDiv({ cls: "wd-header" });
     const txt = h.createDiv({ cls: "wd-header-text" });
@@ -3087,7 +3122,7 @@ class GamificationView extends ItemView {
     const head = sec.createDiv({ cls: "wd-sec-head" });
     head.createDiv({ cls: "wd-sec-label", text: "PROGRESSO" });
     const ctrls = head.createDiv({ cls: "wd-sec-ctrls" });
-    this.plugin.game.renderPanel(sec, ctrls, { full: true });
+    this.plugin.game.renderPanel(sec, ctrls, { full: true, phone: this.phone });
   }
 }
 

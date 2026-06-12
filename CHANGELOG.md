@@ -6,6 +6,14 @@
 
 ---
 
+## [0.13.4] — alpha — 2026-06-11
+
+**Modo "Android" por largura do painel (não mais por dispositivo).**
+
+- A responsividade que existia só para o celular agora é **por tamanho do painel**: ao estreitar uma aba no PC (largura tipo celular), Dashboard, Todoist e Gamificação entram no **modo Android** (calendário de 3 dias, grids 2 colunas, caixas do Todoist empilhadas, heatmap oculto, Crescimento/XP em 15 dias, alvos de toque maiores).
+- Cada **painel decide pelo seu próprio tamanho** — painéis lado a lado podem estar um em modo Android e outro em desktop.
+- Limiar de 600px. O celular continua em modo Android normalmente.
+
 ## [0.13.3] — alpha — 2026-06-11
 
 **Gamificação — níveis por projeto e por etiqueta.**

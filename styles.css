@@ -1632,46 +1632,45 @@ body {
 .wd-urgency-tip .wd-tip-row { justify-content: flex-start; }
 .wd-urgency-tip .wd-tip-date { margin-left: auto; text-transform: uppercase; }
 
-/* ── Responsivo / mobile (Fase 11) ───────────────────────────────────────────
-   Telas estreitas (celular, painel estreito). Tablet em paisagem fica largo o
-   bastante pra não disparar e mantém os 7 dias cheios. */
-@media (max-width: 600px) {
-  .wd-root { padding: 12px; }
-  .wd-header { flex-wrap: wrap; gap: 8px; }
+/* ── "Modo Android" por LARGURA do painel (v0.13.4) ──────────────────────────
+   A classe .wd-phone é aplicada no .wd-root pelo JS (isPhoneWidth → ResizeObserver)
+   quando o painel fica estreito (≤600px) ou no celular real. Substitui o antigo
+   @media (viewport) + body.is-phone (dispositivo), então reage à largura de CADA
+   painel — inclusive painéis lado a lado no PC. */
+.wd-root.wd-phone { padding: 12px 12px 80px; }   /* +rodapé p/ alvos de toque não colarem */
+.wd-phone .wd-header { flex-wrap: wrap; gap: 8px; }
 
-  /* Grids de cards: caixas menores cabem 2 por linha no celular */
-  .wd-para-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
-  .wd-proj-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+/* Grids de cards: caixas menores cabem 2 por linha */
+.wd-phone .wd-para-grid { grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 8px; }
+.wd-phone .wd-proj-grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
 
-  /* Os dois grids de 7 colunas (calendário + semana Todoist): compactar */
-  .wd-cal-grid, .wd-todo-grid { gap: 3px; }
-  .wd-cal-col, .wd-todo-col { padding: 6px 3px; min-height: 58px; }
-  .wd-cal-num, .wd-todo-daynum { font-size: 13px; }
-  .wd-cal-name, .wd-todo-dayname { font-size: 8px; letter-spacing: 0; }
-  .wd-todo-chip { font-size: 8px; padding: 2px 3px 2px 5px; gap: 2px; }
+/* Os dois grids de 7 colunas (calendário + semana Todoist): compactar */
+.wd-phone .wd-cal-grid, .wd-phone .wd-todo-grid { gap: 3px; }
+.wd-phone .wd-cal-col, .wd-phone .wd-todo-col { padding: 6px 3px; min-height: 58px; }
+.wd-phone .wd-cal-num, .wd-phone .wd-todo-daynum { font-size: 13px; }
+.wd-phone .wd-cal-name, .wd-phone .wd-todo-dayname { font-size: 8px; letter-spacing: 0; }
+.wd-phone .wd-todo-chip { font-size: 8px; padding: 2px 3px 2px 5px; gap: 2px; }
 
-  /* Tarefas: as 3 caixas empilham no celular */
-  .wd-todo-cols { flex-direction: column; gap: 8px; }
-  .wd-todo-box { width: 100%; }
-  .wd-todo-boxbody { max-height: 260px; }
+/* Tarefas: as 3 caixas empilham */
+.wd-phone .wd-todo-cols { flex-direction: column; gap: 8px; }
+.wd-phone .wd-todo-box { width: 100%; }
+.wd-phone .wd-todo-boxbody { max-height: 260px; }
 
-  /* Linha de estatísticas: barra e ações mais estreitas */
-  .wd-stat-row { grid-template-columns: 1fr auto 56px 30px; gap: 6px; padding: 6px 8px; }
+/* Linha de estatísticas: barra e ações mais estreitas */
+.wd-phone .wd-stat-row { grid-template-columns: 1fr auto 56px 30px; gap: 6px; padding: 6px 8px; }
 
-  /* Capa dos cards um pouco menor pra ganhar densidade vertical */
-  .wd-cover { height: 76px; }
-}
+/* Capa dos cards um pouco menor pra ganhar densidade vertical */
+.wd-phone .wd-cover { height: 76px; }
 
-/* ── Celular (Platform.isPhone → body.is-phone): toque + rodapé — v0.9.0 ────── */
-.is-phone .wd-root { padding-bottom: 80px; }                 /* botões touch não colam no rodapé */
-.is-phone .wd-todo-add { width: 28px; height: 28px; }
-.is-phone .wd-todo-add svg { width: 20px; height: 20px; }
-.is-phone .wd-cal-arrow { padding: 8px 16px; font-size: 20px; }
-.is-phone .wd-todo-check { width: 18px; height: 18px; }
-.is-phone .wd-todo-row { padding: 8px; }
-.is-phone .wd-cal-pill { padding: 5px 8px; }
-.is-phone .wd-todo-refresh,
-.is-phone .wd-todo-filterbtn { padding: 6px 9px; }
+/* Toque + rodapé (antes era body.is-phone — v0.9.0) */
+.wd-phone .wd-todo-add { width: 28px; height: 28px; }
+.wd-phone .wd-todo-add svg { width: 20px; height: 20px; }
+.wd-phone .wd-cal-arrow { padding: 8px 16px; font-size: 20px; }
+.wd-phone .wd-todo-check { width: 18px; height: 18px; }
+.wd-phone .wd-todo-row { padding: 8px; }
+.wd-phone .wd-cal-pill { padding: 5px 8px; }
+.wd-phone .wd-todo-refresh,
+.wd-phone .wd-todo-filterbtn { padding: 6px 9px; }
 
 /* ── Seção SINCRONIZAÇÃO (Syncthing + conflitos) — v0.10.0 ──────────────────── */
 .wd-sync-box {
