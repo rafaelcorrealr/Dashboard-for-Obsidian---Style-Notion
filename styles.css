@@ -2037,6 +2037,80 @@ body {
 }
 .wd-game-bar-mini { height: 6px; }
 
+/* Escopos (aba): selos de origem (Cofre/Todoist/Hist) + botão de ação na divergência */
+.wd-game-scope-right { display: inline-flex; align-items: center; gap: 6px; flex-shrink: 0; }
+.wd-scope-srcs { display: inline-flex; gap: 3px; flex-shrink: 0; }
+.wd-scope-src {
+  font-size: 9px; line-height: 1.5; padding: 0 5px; border-radius: 999px;
+  text-transform: uppercase; letter-spacing: .03em;
+  border: 1px solid var(--wd-border); color: var(--wd-text-muted);
+}
+.wd-scope-src-cofre { color: var(--interactive-accent); border-color: var(--interactive-accent); }
+.wd-scope-src-todo  { color: #E44332; border-color: rgba(228, 67, 50, .5); }
+.wd-scope-src-hist  { color: var(--wd-text-faint); }
+.wd-scope-act { padding: 1px 7px; font-size: 10px; }
+.wd-scope-act-danger { color: #ef4444; border-color: rgba(239, 68, 68, .5); }
+.wd-scope-act-danger:hover { background: rgba(239, 68, 68, .12); color: #ef4444; }
+
+/* Fórmula visual do XP por tarefa (estilo Notion) */
+.wd-game-formula { margin-top: 14px; }
+.wd-game-formula-eq {
+  font-size: 11px; color: var(--wd-text-muted); font-family: var(--font-monospace, monospace);
+}
+.wd-game-formula-parts { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 5px; }
+.wd-game-formula-chip {
+  font-size: 10px; padding: 1px 7px; border-radius: 999px;
+  background: var(--wd-fill); border: 1px solid var(--wd-border);
+  color: var(--wd-text-muted); font-family: var(--font-monospace, monospace);
+}
+
+/* Metas (aba): alvo do período com barra de progresso */
+.wd-game-goalsec { margin-top: 14px; }
+.wd-game-goal { margin-bottom: 9px; }
+.wd-game-goal:last-child { margin-bottom: 0; }
+.wd-game-goal-sub {
+  font-size: 10px; color: var(--wd-text-faint); white-space: nowrap; flex-shrink: 0;
+}
+.wd-game-goal-done .wd-game-scope-name { color: var(--interactive-accent); }
+.wd-game-goal-done .wd-game-bar-fill { opacity: .85; }
+
+/* Conquistas (aba): grid de badges — desbloqueadas coloridas, bloqueadas cinza com progresso */
+.wd-game-achsec { margin-top: 14px; }
+.wd-game-ach-count {
+  font-family: var(--font-monospace, monospace); font-size: 11px; color: var(--wd-text-faint);
+}
+.wd-game-ach-custom { color: var(--interactive-accent); }
+.wd-game-ach-hd-right { display: inline-flex; align-items: center; gap: 8px; }
+.wd-game-ach-edit { padding: 1px 6px; display: inline-flex; }
+.wd-game-ach-edit svg { width: 13px; height: 13px; }
+.wd-game-ach-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 8px; margin-top: 6px;
+}
+.wd-game-ach {
+  position: relative; display: flex; flex-direction: column; align-items: center;
+  text-align: center; gap: 3px; padding: 10px 6px;
+  border: 1px solid var(--wd-border); border-radius: 10px; background: var(--wd-bg-alt);
+  opacity: .5;
+}
+.wd-game-ach-on { opacity: 1; border-color: var(--interactive-accent); }
+.wd-game-ach-new { box-shadow: 0 0 0 1px var(--interactive-accent); }
+.wd-game-ach-ico { display: inline-flex; color: var(--wd-text-faint); }
+.wd-game-ach-ico svg { width: 22px; height: 22px; }
+.wd-game-ach-on .wd-game-ach-ico { color: var(--interactive-accent); }
+.wd-game-ach-title { font-size: 11px; font-weight: 600; color: var(--wd-text); line-height: 1.15; }
+.wd-game-ach-sub {
+  font-size: 10px; color: var(--wd-text-muted); font-family: var(--font-monospace, monospace);
+}
+.wd-game-ach .wd-game-bar-mini { width: 100%; margin-top: 2px; }
+.wd-game-ach-newbadge {
+  position: absolute; top: -6px; right: -4px;
+  font-size: 8px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+  background: var(--interactive-accent); color: var(--text-on-accent, #fff);
+  padding: 1px 5px; border-radius: 8px;
+}
+.wd-phone .wd-game-ach-grid { grid-template-columns: repeat(auto-fill, minmax(80px, 1fr)); }
+
 /* Botão "não feito" (✗) nas linhas de tarefa */
 .wd-todo-undone {
   display: inline-flex; align-items: center; justify-content: center;

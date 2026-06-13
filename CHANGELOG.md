@@ -1,8 +1,43 @@
 # Changelog — Werus Dashboard
 
-> **Estado atual:** Alpha — desenvolvimento pessoal, publicado no GitHub
+> **Estado atual:** `1.0.0` — primeira versão estável, publicada no GitHub
 > ([rafaelcorrealr/Dashboard-for-Obsidian---Style-Notion](https://github.com/rafaelcorrealr/Dashboard-for-Obsidian---Style-Notion)).
-> A primeira versão estável será `1.0.0`. Versões `0.x.x` = iterações internas de desenvolvimento.
+> As versões `0.x.x` foram as iterações internas de desenvolvimento que levaram até aqui.
+
+---
+
+## [1.0.0] — 2026-06-13 — primeira versão estável 🎉
+
+Marco da primeira versão pública. Consolida todo o desenvolvimento `0.x` e fecha o épico de **gamificação**, que ganhou um modelo **declarativo e configurável** — as regras do "jogo" vivem numa nota do cofre que pode ser editada e **compartilhada com a comunidade**.
+
+### Gamificação — regras declaráveis (a grande novidade desta versão)
+
+Toda a configuração da gamificação passou a viver numa nota única — **`Gamificação — Regras.md`** (caminho configurável nas Configurações, para cofres que não usam o método PARA) — num bloco `json` **auto-documentado**. Bloco inválido → o plugin usa os padrões embutidos. Editar = clicar no ✏️ na aba ou nas Configurações.
+
+- **XP por tarefa configurável:** `XP da tarefa = XP da prioridade + soma dos bônus das etiquetas` (`xpByPriority` + `xpByLabel`, este podendo ser negativo). Uma "fórmula visual" na aba mostra os valores vigentes.
+- **Níveis por fórmula ou tabela:** uma `levelCurve` (fórmula do XP cumulativo do nível `n`, padrão `100 * n^2`) vale para o nível geral e por escopo; cada projeto/etiqueta pode ter **níveis próprios** via `scopeLevels` — uma fórmula com teto (`{ "levels": 100, "curve": "50 * n" }`) **ou** uma tabela explícita de limiares (`{ "thresholds": [...] }`). As fórmulas são avaliadas por um interpretador aritmético **seguro** (sem código executável — importante porque as regras são compartilháveis).
+- **Conquistas (badges):** desbloqueadas ao atingir uma métrica (nível, XP total, volume, p1, streak, dia cheio, nível por escopo); permanentes, com data e selo "novo!". A lista é declarativa na nota (18 padrões embutidos) — cada conquista é `{ id, title, desc, icon, cat, metric, goal }`.
+- **Metas (`goals`):** alvos do período atual (`day`/`week`/`month`/`year`), de **XP** ou de **nº de tarefas**, com filtro opcional por projeto/etiqueta. Resetam sozinhas a cada período; barra de progresso na aba.
+
+### Escopos (projetos/etiquetas) — reconciliação Cofre × Todoist × Histórico
+
+A aba lista cada projeto/etiqueta com **selos de origem** (`Cofre` / `Todoist` / `Hist`) e o nível atual, e oferece a **ação certa** quando há divergência:
+- só no **Histórico** (some do Todoist e das regras) → **apagar do histórico** (com confirmação; o XP total é preservado);
+- só no **Todoist** → **+ Cofre** (adiciona às regras e abre para configurar os níveis);
+- só no **Cofre** → **+ Todoist** (cria o projeto/etiqueta no Todoist).
+
+### Provisionar o Todoist
+
+Botão **"Provisionar Todoist"** (Configurações) cria de uma vez os projetos e etiquetas listados nas regras que ainda **não existem** no Todoist — então alguém pode escrever um "jogo" e o jogador só clica para preparar a sua conta.
+
+### Documentação
+
+A própria nota de Regras é uma **referência completa** (cada campo explicado, com exemplos, tabelas de métricas/períodos e a sintaxe de fórmula). Botão **"Regenerar documentação"** atualiza a prosa da nota preservando a sua configuração.
+
+### Notas técnicas
+
+- O log de XP agora grava também a **prioridade** de cada evento (para estatísticas corretas mesmo com o XP por prioridade configurável); formato retrocompatível.
+- Mantém tudo o que já existia: cards do cofre, navegador inline, Relatórios, hub do Todoist (aba + pacotes + cache offline), Syncthing, avisos de urgência, gráficos, e o **modo Android por largura do painel**.
 
 ---
 

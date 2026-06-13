@@ -4,7 +4,7 @@
 
 Plugin Obsidian pessoal para o Second Brain. Reúne num só lugar: cards por pasta, estatísticas do cofre, calendário/relatórios, hub do **Todoist** (tarefas + pacotes), **gamificação** das tarefas (XP/níveis), saúde do **Syncthing**, avisos de urgência, gráficos de atividade e navegador inline de notas.
 
-> ⚠️ **Alpha** — desenvolvimento pessoal. Publicado no GitHub; a primeira versão estável será `1.0.0`.
+> ✅ **v1.0.0** — primeira versão estável. Desenvolvimento pessoal, publicado no GitHub.
 > Compatível com Obsidian ≥ 1.5.0, **desktop e mobile** (Android testado).
 > **Responsivo por largura do painel:** quando um painel fica estreito (≤ 600px) — inclusive no PC, com abas lado a lado — entra em **modo Android** (layout compacto + alvos de toque maiores). Vale para Dashboard, Todoist e Gamificação.
 > **Segue o tema do Obsidian** (claro/escuro) automaticamente, usando a cor de destaque do seu tema.
@@ -55,14 +55,19 @@ setas ▲▼ nem botões de ocultar durante o uso — desde a v0.11.0).
 - **Cache offline** (localStorage) + auto-refresh por TTL: a aba abre com as últimas tarefas mesmo sem conexão
 - Requer o token pessoal do Todoist nas configurações (salvo em `data.json`, fora do Git)
 
-### Gamificação
-Transforma tarefas concluídas em **XP** e níveis. Aba própria **Gamificação** (ícone `trophy` + comando **"Abrir Gamificação"**) + uma **faixa no dashboard** (seção `game`). O histórico mora num **log no cofre** — `20.Areas/Gamificação.md` — que é a fonte canônica (não depende do limite de ~3 meses da API do Todoist).
+### Gamificação (configurável e compartilhável)
+Transforma tarefas concluídas em **XP**, níveis, conquistas e metas. Aba própria **Gamificação** (ícone `trophy` + comando **"Abrir Gamificação"**) + uma **faixa no dashboard** (seção `game`). O histórico mora num **log no cofre** — `20.Areas/Gamificação.md` — que é a fonte canônica (não depende do limite de ~3 meses da API do Todoist).
 
-- **"Salvar concluídas":** lê as tarefas concluídas do Todoist, grava no log com o XP e **apaga do Todoist** (mantém a conta limpa). Tarefas **recorrentes** são registradas mas **não apagadas**. Sempre confirma com a lista.
-- **Botão "não feito" (✗)** por tarefa: registra a falha com **punição** (XP negativo = base da prioridade × fator configurável) e apaga. Sempre confirma.
-- **Pontuação** por prioridade (p1=8 / p2=5 / p3=3 / p4=1). **Nível** = `⌊√(XP/100)⌋` com **barra de progresso** (cor sólida do tema + marcações a cada 10%). **Streak** (dias seguidos com ≥1 tarefa) atual + recorde. **XP de hoje**.
-- **Gráfico de XP por dia** (últimos 30 / 15 dias, em **barras ou linha com pontos**) e **níveis por projeto e por etiqueta** (top 8 por XP, cada um com nível + mini-barra; escopos apagados no Todoist ganham um aviso "não existe mais") — na aba. A curva de níveis e o design das conquistas estão documentados em `10.Projects/Werus Dashboard/Gamificação — Níveis e Conquistas.md`.
-- **Configurações → Gamificação:** ligar/desligar + fator de punição.
+**Tudo é configurado numa nota declarativa — `Gamificação — Regras.md`** (caminho ajustável nas Configurações), num bloco `json` auto-documentado. Edite pelo ✏️; bloco inválido → padrões embutidos. **Compartilhe a nota = compartilha o "jogo" inteiro** (XP, níveis, conquistas, metas, projetos e etiquetas).
+
+- **Coleta:** **"Salvar concluídas"** lê as tarefas concluídas do Todoist, grava no log com o XP e **apaga do Todoist** (recorrentes são registradas mas não apagadas). O botão **"não feito" (✗)** registra a falha com **punição** e apaga. Sempre confirma.
+- **XP por tarefa = prioridade + Σ(etiquetas)** — totalmente configurável (`xpByPriority`, `xpByLabel`; bônus de etiqueta pode ser negativo). Uma "fórmula visual" na aba mostra os valores atuais.
+- **Níveis por fórmula ou tabela:** `levelCurve` (padrão `100 * n^2`) vale para o nível geral e por escopo; cada projeto/etiqueta pode ter níveis próprios via `scopeLevels` — fórmula com teto (`{ "levels": N, "curve": "..." }`) ou tabela de limiares (`{ "thresholds": [...] }`). Fórmulas avaliadas por um interpretador aritmético **seguro**.
+- **Conquistas** (badges declarativas, permanentes, com "novo!") e **metas** (`goals` por dia/semana/mês/ano, de XP ou nº de tarefas, com filtro por projeto/etiqueta) — ambas editáveis na nota de Regras, com barras de progresso na aba.
+- **Escopos (projetos/etiquetas)** com selos de origem **Cofre / Todoist / Hist** e ação na divergência: **apagar do histórico** (órfão), **+ Cofre** (registrar e configurar) ou **+ Todoist** (criar lá). Botão **"Provisionar Todoist"** cria de uma vez tudo o que falta.
+- **Gráfico de XP por dia** (30 / 15 dias, **barras ou linha**), **streak** (atual + recorde) e **XP de hoje** — na aba.
+- **Configurações → Gamificação:** ligar/desligar, fator de punição, caminho da nota de Regras, regenerar documentação, provisionar Todoist.
+- Referência conceitual em `10.Projects/Werus Dashboard/Gamificação — Níveis e Conquistas.md`; a referência completa dos campos fica na própria nota de Regras.
 
 ### Sincronização (Syncthing)
 - **Estado da pasta** e, por **aparelho**: online, **completação %**, pendências e **último visto** — via API REST do Syncthing
@@ -155,7 +160,11 @@ Após compilar, recarregue o Obsidian: `Ctrl+R`.
 | `gamificationEnabled` | `boolean` | Liga a gamificação |
 | `gamePenaltyFactor` | `number` | Fator da punição de "não feito" (default 1,5) |
 | `gameLastHarvest` | `string` | Controle da última colheita |
+| `gameRulesPath` | `string` | Caminho da nota de Regras (default `20.Areas/Gamificação — Regras.md`) |
+| `gameAchievements` | `{[id]:data}` | Data de desbloqueio de cada conquista |
+| `gameChartMode` / `growthChartMode` | `"bars"\|"line"` | Modo dos gráficos de XP/dia e Crescimento |
 
+> O **conteúdo do jogo** (XP por prioridade/etiqueta, curvas/tabelas de níveis, conquistas, metas, projetos e etiquetas) **não** fica no `data.json`: vive na **nota de Regras** (`gameRulesPath`), em texto, para poder ser editada e compartilhada.
 > As credenciais do **Syncthing** (URL, API key, ID da pasta) ficam no **localStorage por-dispositivo**, não no `data.json` — cada máquina tem a sua. O `data.json` e o token do Todoist ficam fora do Git (`.gitignore`).
 
 ---
@@ -163,14 +172,14 @@ Após compilar, recarregue o Obsidian: `Ctrl+R`.
 ## Estrutura do código (`main.ts`)
 
 - **Views** (`extends WdView`, que observa a largura do painel via `ResizeObserver`): `DashboardView`, `TodoistView`, `GamificationView`.
-- **Controllers** (estado único, compartilhado por dashboard + aba): `TodoistController` (fetch/ações/pacotes/cache), `GameController` (log de XP, colheita, painel, níveis).
+- **Controllers** (estado único, compartilhado por dashboard + aba): `TodoistController` (fetch/ações/pacotes/cache), `GameController` (log de XP, colheita, regras, painel, níveis, conquistas, metas e reconciliação de escopos).
+- **Regras da gamificação:** `parseGameRules`/`buildGameRulesContent` (nota declarativa), `compileFormula` (interpretador aritmético seguro), `levelFromThr`/`scopeLevelFn` (níveis por curva/tabela), `computeGameStats(events, rules)`, `evalAchievement`, `goalProgress`.
 - **Cache do cofre:** `buildVaultCache(app)` faz **uma** varredura → `VaultCache` (stats por pasta, datas, ctime/dia), invalidado por eventos do vault.
-- **Helpers:** `isPhoneWidth`, `levelInfo`, `computeGameStats`, `reviewedStats`, `folderStats`, `filesIn`, `urgencyStats`, `coverInFolder`, `fetchTodoistTasks`/`closeTodoistTask`, e os `render*` por seção.
+- **Helpers:** `isPhoneWidth`, `reviewedStats`, `folderStats`, `filesIn`, `urgencyStats`, `coverInFolder`, `fetchTodoistTasks`/`closeTodoistTask`, e os `render*` por seção.
 - **Settings:** `WerusSettingTab` (toda a administração de exibição, fontes, pacotes, Todoist, Syncthing e gamificação).
 
 ---
 
 ## Versão atual
 
-**v0.13.5 (alpha)** — ver [CHANGELOG](CHANGELOG.md) para o histórico de desenvolvimento.
-A primeira versão estável será `1.0.0`.
+**v1.0.0** — primeira versão estável. Ver [CHANGELOG](CHANGELOG.md) para o histórico de desenvolvimento.

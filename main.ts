@@ -17,10 +17,14 @@ const TODO_MAX_PAGES = 50;                               // teto de páginas pag
 const GAME_VIEW_TYPE = "werus-game";
 const GAME_LOG_PATH = "20.Areas/Gamificação.md";        // log canônico de XP no cofre
 const GAME_LOG_FENCE = "wd-game-log";                   // bloco cercado com os eventos (1 por linha)
+const DEFAULT_RULES_PATH = "20.Areas/Gamificação — Regras.md";   // nota editável (bloco ```json) com as regras do jogo
+const LEGACY_ACH_PATH = "20.Areas/Gamificação — Conquistas.md";  // nota antiga (só conquistas) — migrada 1x para as Regras
 const HARVEST_BACKFILL_DAYS = 90;                       // 1ª colheita: janela máx. da API
 // XP base por prioridade da API (4 = p1 … 1 = p4).
-const XP_BY_PRI: Record<number, number> = { 4: 8, 3: 5, 2: 3, 1: 1 };
-function xpForPriority(p: number): number { return XP_BY_PRI[p] ?? 1; }
+type PriKey = "p1" | "p2" | "p3" | "p4";
+const DEFAULT_XP_BY_PRI: Record<PriKey, number> = { p1: 8, p2: 5, p3: 3, p4: 1 };
+// API do Todoist: priority 4 = p1 (urgente) … 1 = p4 (padrão).
+function priKey(p: number): PriKey { return p === 4 ? "p1" : p === 3 ? "p2" : p === 2 ? "p3" : "p4"; }
 
 // uid curto e estável (pacotes de tarefas).
 function uid(): string {
@@ -77,6 +81,8 @@ interface DashSettings {
   gameLastHarvest: string;       // ISO da última colheita de concluídas (limita o fetch)
   gameChartMode: "bars" | "line";    // gráfico de XP por dia: barras ou linha com pontos
   growthChartMode: "bars" | "line";  // gráfico de Crescimento do cofre: barras ou linha
+  gameAchievements: Record<string, string>;  // id da conquista → data ISO de desbloqueio
+  gameRulesPath: string;         // caminho da nota de Regras (JSON) — configurável p/ cofres sem PARA
 }
 
 const DEFAULT_SETTINGS: DashSettings = {
@@ -104,6 +110,8 @@ const DEFAULT_SETTINGS: DashSettings = {
   gameLastHarvest: "",
   gameChartMode: "bars",
   growthChartMode: "bars",
+  gameAchievements: {},
+  gameRulesPath: DEFAULT_RULES_PATH,
 };
 
 interface ParaSection {
@@ -493,6 +501,34 @@ async function moveTodoistTask(token: string, id: string, project_id: string): P
   if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
 }
 
+// Cria um projeto. POST /projects → 200 com o projeto criado. (Provisionamento das Regras.)
+async function createTodoistProject(token: string, name: string): Promise<void> {
+  const res = await requestUrl({
+    url: "https://api.todoist.com/api/v1/projects",
+    method: "POST",
+    headers: jsonHeaders(token),
+    body: JSON.stringify({ name }),
+    throw: false,
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("token inválido (401/403)");
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+}
+
+// Cria uma etiqueta pessoal. POST /labels → 200. `color` = nome de paleta do Todoist (opcional).
+async function createTodoistLabel(token: string, name: string, color?: string): Promise<void> {
+  const body: { name: string; color?: string } = { name };
+  if (color) body.color = color;
+  const res = await requestUrl({
+    url: "https://api.todoist.com/api/v1/labels",
+    method: "POST",
+    headers: jsonHeaders(token),
+    body: JSON.stringify(body),
+    throw: false,
+  });
+  if (res.status === 401 || res.status === 403) throw new Error("token inválido (401/403)");
+  if (res.status !== 200) throw new Error(`HTTP ${res.status}`);
+}
+
 // Exclui a tarefa. DELETE /tasks/{id} → 204.
 async function deleteTodoistTask(token: string, id: string): Promise<void> {
   const res = await requestUrl({
@@ -543,6 +579,7 @@ interface GameEvent {
   content: string;
   project: string;  // nome do projeto (ou id se desconhecido)
   labels: string[];
+  pri?: number;     // prioridade da API (1..4) no momento — p/ p1Count com XP configurável
 }
 
 interface GameStats {
@@ -554,23 +591,118 @@ interface GameStats {
   streakBest: number;
   todayXp: number;
   todayCount: number;
+  doneCount: number;   // total de eventos "feito" (volume)
+  p1Count: number;     // "feito" de prioridade p1 (por e.pri, com fallback de XP nos eventos antigos)
+  maxDayXp: number;    // maior XP num único dia (≥0)
+  levelMax: boolean;   // o nível geral está no teto da curva (curva padrão é ilimitada → false)
   byDay: Map<string, { xp: number; count: number }>;
-  byProject: Map<string, number>;   // só "feito"
-  byLabel: Map<string, number>;     // só "feito"
+  byProject: Map<string, number>;        // XP bruto acumulado, só "feito"
+  byLabel: Map<string, number>;          // idem
+  byProjectInfo: Map<string, LevelInfo>; // nível/progresso por projeto (respeita curva/tabela do escopo)
+  byLabelInfo: Map<string, LevelInfo>;   // idem por etiqueta
 }
 
-// Base da curva de nível: XP total para o nível L = XP_LEVEL_BASE · L² (quadrática, SEM teto).
-// Mude esta constante para encurtar/alongar a progressão (ver doc "Gamificação — Níveis e Conquistas").
-const XP_LEVEL_BASE = 100;
-function gameLevel(xp: number): number {
-  return xp <= 0 ? 0 : Math.floor(Math.sqrt(xp / XP_LEVEL_BASE));
+// Avaliador de fórmula ARITMÉTICA seguro (sem eval/Function — as Regras são compartilháveis).
+// Suporta números, variáveis permitidas, + - * / %, ^ (potência, direita-assoc), unário -, e ( ).
+// Compila uma vez → (env) => número; null se a expressão for inválida.
+type FormulaFn = (env: Record<string, number>) => number;
+function compileFormula(src: string, allowed: string[]): FormulaFn | null {
+  const allow = new Set(allowed);
+  const toks: { t: string; n?: number; s?: string }[] = [];
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+    if (/\s/.test(c)) { i++; continue; }
+    if (/[0-9.]/.test(c)) {
+      let j = i + 1;
+      while (j < src.length && /[0-9.]/.test(src[j])) j++;
+      const num = src.slice(i, j);
+      if (!/^\d*\.?\d+$/.test(num)) return null;
+      toks.push({ t: "num", n: Number(num) }); i = j; continue;
+    }
+    if (/[a-zA-Z_]/.test(c)) {
+      let j = i + 1;
+      while (j < src.length && /[a-zA-Z0-9_]/.test(src[j])) j++;
+      const id = src.slice(i, j);
+      if (!allow.has(id)) return null;
+      toks.push({ t: "id", s: id }); i = j; continue;
+    }
+    if ("+-*/%^()".includes(c)) { toks.push({ t: c }); i++; continue; }
+    return null;
+  }
+  let p = 0, bad = false;
+  const cur = () => toks[p];
+  function parseExpr(): FormulaFn {
+    let a = parseTerm();
+    while (cur() && (cur().t === "+" || cur().t === "-")) {
+      const op = toks[p++].t, left = a, right = parseTerm();
+      a = op === "+" ? (e) => left(e) + right(e) : (e) => left(e) - right(e);
+    }
+    return a;
+  }
+  function parseTerm(): FormulaFn {
+    let a = parseUnary();
+    while (cur() && (cur().t === "*" || cur().t === "/" || cur().t === "%")) {
+      const op = toks[p++].t, left = a, right = parseUnary();
+      a = op === "*" ? (e) => left(e) * right(e) : op === "/" ? (e) => left(e) / right(e) : (e) => left(e) % right(e);
+    }
+    return a;
+  }
+  function parseUnary(): FormulaFn {
+    if (cur() && (cur().t === "-" || cur().t === "+")) {
+      const op = toks[p++].t, x = parseUnary();
+      return op === "-" ? (e) => -x(e) : x;
+    }
+    return parsePower();
+  }
+  function parsePower(): FormulaFn {
+    const base = parsePrimary();
+    if (cur() && cur().t === "^") { p++; const exp = parseUnary(); return (e) => Math.pow(base(e), exp(e)); }
+    return base;
+  }
+  function parsePrimary(): FormulaFn {
+    const tk = cur();
+    if (!tk) { bad = true; return () => 0; }
+    if (tk.t === "num") { p++; const n = tk.n ?? 0; return () => n; }
+    if (tk.t === "id") { p++; const s = tk.s ?? ""; return (e) => e[s] ?? 0; }
+    if (tk.t === "(") { p++; const x = parseExpr(); if (!cur() || cur().t !== ")") bad = true; else p++; return x; }
+    bad = true; return () => 0;
+  }
+  const fn = parseExpr();
+  if (bad || p !== toks.length || toks.length === 0) return null;
+  return (env) => { const v = fn(env); return Number.isFinite(v) ? v : 0; };
 }
-// Nível + progresso para um total de XP (geral ou por escopo). XP p/ nível L = BASE·L².
-function levelInfo(xp: number): { level: number; into: number; forNext: number; pct: number } {
-  const level = gameLevel(xp);
-  const into = Math.max(0, xp) - XP_LEVEL_BASE * level * level;
-  const forNext = XP_LEVEL_BASE * (2 * level + 1);
-  return { level, into, forNext, pct: forNext ? Math.min(100, Math.round(into / forNext * 100)) : 0 };
+
+// ── Níveis por curva (fórmula) ou tabela (limiares) ──────────────────────────
+const DEFAULT_LEVEL_CURVE = "100 * n^2";   // XP cumulativo do nível n (= ⌊√(xp/100)⌋, retrocompat)
+const MAX_LEVEL_ITER = 100000;             // teto de segurança p/ curvas ilimitadas
+interface LevelInfo { level: number; into: number; forNext: number; pct: number; max: boolean }
+type ThrFn = (n: number) => number;        // XP cumulativo para alcançar o nível n (n≥1), crescente
+
+// Compila uma curva → ThrFn; cai no padrão se a fórmula for inválida.
+function curveToThr(curve: string): ThrFn {
+  const fn = compileFormula(curve, ["n"]) ?? compileFormula(DEFAULT_LEVEL_CURVE, ["n"]) as FormulaFn;
+  return (n) => fn({ n });
+}
+// Nível + progresso a partir de thr(n) e do XP. maxLevel = 0 → ilimitado; >0 → trava o nível.
+function levelFromThr(xp: number, thr: ThrFn, maxLevel: number): LevelInfo {
+  const x = Math.max(0, xp);
+  let level = 0;
+  const cap = maxLevel > 0 ? maxLevel : MAX_LEVEL_ITER;
+  let prev = 0;
+  while (level < cap) {
+    const need = thr(level + 1);
+    if (!Number.isFinite(need) || need > x) break;
+    if (level > 0 && need <= prev) break;   // curva não-crescente: para (evita varrer até o teto)
+    prev = need; level++;
+  }
+  const atMax = maxLevel > 0 && level >= maxLevel;
+  const base = level >= 1 ? thr(level) : 0;
+  const next = atMax ? base : thr(level + 1);
+  const into = Math.max(0, x - base);
+  const forNext = Math.max(1, (Number.isFinite(next) ? next : base) - base);
+  const pct = atMax ? 100 : Math.min(100, Math.round(into / forNext * 100));
+  return { level, into, forNext, pct, max: atMax };
 }
 
 // Gráfico de linha com pontos (SVG responsivo) — reusado pelo XP/dia e pelo Crescimento.
@@ -614,18 +746,22 @@ function escapeGameField(s: string): string {
 }
 function serializeGameEvent(e: GameEvent): string {
   const labels = e.labels.map(l => escapeGameField(l).replace(/,/g, " ")).join(",");
-  return [e.date, e.type, String(e.xp), e.key, escapeGameField(e.content), escapeGameField(e.project), labels].join("\t");
+  return [e.date, e.type, String(e.xp), e.key, escapeGameField(e.content), escapeGameField(e.project), labels,
+    e.pri != null ? String(e.pri) : ""].join("\t");
 }
 function parseGameEventLine(line: string): GameEvent | null {
   const p = line.split("\t").map(s => s.trim());
   if (p.length < 4) return null;
-  const [date, type, xpRaw, key, content = "", project = "", labelsRaw = ""] = p;
+  const [date, type, xpRaw, key, content = "", project = "", labelsRaw = "", priRaw = ""] = p;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) return null;
   if (type !== "feito" && type !== "nao-feito") return null;
   const xp = Number(xpRaw);
   if (!Number.isFinite(xp) || !key) return null;
   const labels = labelsRaw ? labelsRaw.split(",").map(s => s.trim()).filter(Boolean) : [];
-  return { date, type, xp, key, content, project, labels };
+  const priN = Number(priRaw);
+  const ev: GameEvent = { date, type, xp, key, content, project, labels };
+  if (priRaw && Number.isInteger(priN) && priN >= 1 && priN <= 4) ev.pri = priN;
+  return ev;
 }
 // Extrai os eventos do bloco cercado ```wd-game-log … ``` da nota.
 function parseGameLog(content: string): GameEvent[] {
@@ -674,17 +810,40 @@ function computeStreak(doneDays: Set<string>): { streakCurrent: number; streakBe
   return { streakCurrent: cur, streakBest: Math.max(best, cur) };
 }
 
-// Estatísticas a partir dos eventos do log (fonte canônica).
-function computeGameStats(events: GameEvent[]): GameStats {
+// Estatísticas a partir dos eventos do log (fonte canônica). `caps` (opcional) trava o XP acumulado
+// por projeto/etiqueta no máximo configurado — só limita os escopos listados; o XP/nível geral não muda.
+// thr(n) + nº máx. de níveis para um escopo: tabela explícita (limiares) ou curva própria; sem def → curva padrão ilimitada.
+function scopeLevelFn(def: ScopeLevelDef | undefined, defaultThr: ThrFn): { thr: ThrFn; max: number } {
+  if (!def) return { thr: defaultThr, max: 0 };
+  if (def.kind === "table") {
+    const t = def.thresholds;
+    return { thr: (n) => (n >= 1 && n <= t.length ? t[n - 1] : Infinity), max: t.length };
+  }
+  return { thr: curveToThr(def.curve), max: def.levels };
+}
+// Maior nível entre os escopos (ignora `skip`, ex.: "—" = sem projeto).
+function maxScopeLevel(infos: Map<string, LevelInfo>, skip?: string): number {
+  let best = 0;
+  for (const [name, info] of infos) { if (skip && name === skip) continue; best = Math.max(best, info.level); }
+  return best;
+}
+
+function computeGameStats(events: GameEvent[], rules?: GameRules): GameStats {
   const byDay = new Map<string, { xp: number; count: number }>();
   const byProject = new Map<string, number>();
   const byLabel = new Map<string, number>();
   let totalXp = 0;
+  let doneCount = 0;
+  let p1Count = 0;
+  const fallbackP1 = DEFAULT_XP_BY_PRI.p1;   // eventos antigos sem `pri`: deduz p1 pelo XP padrão de então
   for (const e of events) {
     totalXp += e.xp;
     const d = byDay.get(e.date) ?? { xp: 0, count: 0 };
     d.xp += e.xp;
-    if (e.type === "feito") d.count += 1;
+    if (e.type === "feito") {
+      d.count += 1; doneCount += 1;
+      if (e.pri != null ? e.pri === 4 : e.xp === fallbackP1) p1Count += 1;
+    }
     byDay.set(e.date, d);
     if (e.type === "feito") {
       const proj = e.project || "—";
@@ -693,19 +852,453 @@ function computeGameStats(events: GameEvent[]): GameStats {
     }
   }
   if (totalXp < 0) totalXp = 0;
-  const level = gameLevel(totalXp);
+  let maxDayXp = 0;
+  for (const d of byDay.values()) if (d.xp > maxDayXp) maxDayXp = d.xp;
+
+  const defThr = curveToThr(rules?.levelCurve ?? DEFAULT_LEVEL_CURVE);
+  const gi = levelFromThr(totalXp, defThr, 0);
+  const scopeInfo = (m: Map<string, number>, defs?: Map<string, ScopeLevelDef>): Map<string, LevelInfo> => {
+    const out = new Map<string, LevelInfo>();
+    for (const [name, xp] of m) {
+      const { thr, max } = scopeLevelFn(defs?.get(name), defThr);
+      out.set(name, levelFromThr(xp, thr, max));
+    }
+    return out;
+  };
+  const byProjectInfo = scopeInfo(byProject, rules?.scopeLevels.projects);
+  const byLabelInfo = scopeInfo(byLabel, rules?.scopeLevels.labels);
+
   const doneDays = new Set<string>();
   for (const e of events) if (e.type === "feito") doneDays.add(e.date);
   const { streakCurrent, streakBest } = computeStreak(doneDays);
   const today = byDay.get(toKey(new Date())) ?? { xp: 0, count: 0 };
   return {
-    totalXp, level,
-    xpIntoLevel: totalXp - XP_LEVEL_BASE * level * level,
-    xpForNext: XP_LEVEL_BASE * (2 * level + 1),
+    totalXp, level: gi.level, xpIntoLevel: gi.into, xpForNext: gi.forNext, levelMax: gi.max,
     streakCurrent, streakBest,
     todayXp: today.xp, todayCount: today.count,
-    byDay, byProject, byLabel,
+    doneCount, p1Count, maxDayXp,
+    byDay, byProject, byLabel, byProjectInfo, byLabelInfo,
   };
+}
+
+// ───────────────────────── Conquistas (badges) ─────────────────────────
+// Derivadas só de GameStats (já calculado) — sem chamada extra ao Todoist.
+// Desbloqueada quando value(s) >= goal; permanente (uma vez ganha, fica — punição não re-bloqueia).
+type MetricId = "level" | "totalXp" | "doneCount" | "p1Count" | "maxDayXp"
+  | "streakBest" | "streakCurrent" | "projectLevel" | "labelLevel";
+// Vocabulário de métricas que uma conquista (ou futura meta) pode medir — a ÚNICA parte em código.
+// Para criar conquistas via nota, use um destes nomes em "metric". Adicionar uma métrica nova aqui
+// a torna disponível para todos.
+const METRICS: Record<MetricId, (s: GameStats) => number> = {
+  level:         s => s.level,
+  totalXp:       s => s.totalXp,
+  doneCount:     s => s.doneCount,
+  p1Count:       s => s.p1Count,
+  maxDayXp:      s => s.maxDayXp,
+  streakBest:    s => s.streakBest,
+  streakCurrent: s => s.streakCurrent,
+  projectLevel:  s => maxScopeLevel(s.byProjectInfo, "—"),
+  labelLevel:    s => maxScopeLevel(s.byLabelInfo),
+};
+const METRIC_LABELS: Record<MetricId, string> = {
+  level: "Nível geral",
+  totalXp: "XP total acumulado",
+  doneCount: "Tarefas concluídas (total)",
+  p1Count: "Tarefas p1 concluídas",
+  maxDayXp: "Maior XP num único dia",
+  streakBest: "Maior sequência de dias",
+  streakCurrent: "Sequência de dias atual",
+  projectLevel: "Maior nível entre os projetos",
+  labelLevel: "Maior nível entre as etiquetas",
+};
+// Conquista = DADO puro (serializável em JSON): id, título, ícone, categoria + métrica e limiar.
+// Desbloqueia quando METRICS[metric](stats) >= goal; permanente (punição não re-bloqueia).
+interface Achievement {
+  id: string;
+  cat: string;        // categoria (cabeçalho na UI)
+  title: string;
+  desc: string;
+  icon: string;       // Lucide
+  metric: MetricId;
+  goal: number;
+}
+// Lista padrão embutida. O campo `achievements` da nota de Regras pode substituí-la por completo.
+const DEFAULT_ACHIEVEMENTS: Achievement[] = [
+  // Nível (geral)
+  { id: "lvl5",  cat: "Nível", title: "Aprendiz", desc: "Alcance o nível 5",  icon: "star",  goal: 5,  metric: "level" },
+  { id: "lvl10", cat: "Nível", title: "Veterano", desc: "Alcance o nível 10", icon: "medal", goal: 10, metric: "level" },
+  { id: "lvl20", cat: "Nível", title: "Mestre",   desc: "Alcance o nível 20", icon: "crown", goal: 20, metric: "level" },
+  // Sequência (streak recorde)
+  { id: "streak3",   cat: "Sequência", title: "Pegando o ritmo", desc: "3 dias seguidos com tarefa",   icon: "flame", goal: 3,   metric: "streakBest" },
+  { id: "streak7",   cat: "Sequência", title: "Semana cheia",    desc: "7 dias seguidos com tarefa",   icon: "flame", goal: 7,   metric: "streakBest" },
+  { id: "streak30",  cat: "Sequência", title: "Mês de fogo",     desc: "30 dias seguidos com tarefa",  icon: "flame", goal: 30,  metric: "streakBest" },
+  { id: "streak100", cat: "Sequência", title: "Centurião",       desc: "100 dias seguidos com tarefa", icon: "flame", goal: 100, metric: "streakBest" },
+  // Volume (tarefas concluídas)
+  { id: "vol10",   cat: "Volume", title: "Primeiros passos", desc: "10 tarefas concluídas",   icon: "check-check", goal: 10,   metric: "doneCount" },
+  { id: "vol50",   cat: "Volume", title: "Engrenando",       desc: "50 tarefas concluídas",   icon: "check-check", goal: 50,   metric: "doneCount" },
+  { id: "vol100",  cat: "Volume", title: "Centena",          desc: "100 tarefas concluídas",  icon: "check-check", goal: 100,  metric: "doneCount" },
+  { id: "vol500",  cat: "Volume", title: "Imparável",        desc: "500 tarefas concluídas",  icon: "check-check", goal: 500,  metric: "doneCount" },
+  { id: "vol1000", cat: "Volume", title: "Milhar",           desc: "1000 tarefas concluídas", icon: "check-check", goal: 1000, metric: "doneCount" },
+  // Prioridade (tarefas p1)
+  { id: "p1_25",  cat: "Prioridade", title: "Caçador de p1",          desc: "25 tarefas p1 concluídas",  icon: "zap", goal: 25,  metric: "p1Count" },
+  { id: "p1_100", cat: "Prioridade", title: "Matador de prioridades", desc: "100 tarefas p1 concluídas", icon: "zap", goal: 100, metric: "p1Count" },
+  // Dia cheio (XP num único dia)
+  { id: "day50",  cat: "Dia cheio", title: "Dia produtivo", desc: "50+ XP num único dia",  icon: "sun",     goal: 50,  metric: "maxDayXp" },
+  { id: "day100", cat: "Dia cheio", title: "Dia épico",     desc: "100+ XP num único dia", icon: "sunrise", goal: 100, metric: "maxDayXp" },
+  // Escopo (níveis por projeto/etiqueta)
+  { id: "proj5",  cat: "Escopo", title: "Especialista",   desc: "Nível 5 em algum projeto",   icon: "folder", goal: 5, metric: "projectLevel" },
+  { id: "label5", cat: "Escopo", title: "Hábito formado", desc: "Nível 5 em alguma etiqueta", icon: "tag",    goal: 5, metric: "labelLevel" },
+];
+interface AchievementState { a: Achievement; value: number; unlocked: boolean; pct: number }
+function metricValue(metric: string, s: GameStats): number {
+  const fn = (METRICS as Record<string, (s: GameStats) => number>)[metric];
+  return fn ? fn(s) : 0;
+}
+function evalAchievement(a: Achievement, s: GameStats): AchievementState {
+  const value = metricValue(a.metric, s);
+  const unlocked = value >= a.goal;
+  const pct = a.goal > 0 ? Math.min(100, Math.round(value / a.goal * 100)) : 0;
+  return { a, value, unlocked, pct };
+}
+
+// ── Metas (gameGoals): alvo por período (dia/semana/mês/ano), de XP ou de nº de tarefas ──────
+// Derivadas dos eventos "feito" do período ATUAL (resetam sozinhas a cada período). Filtro opcional
+// por projeto/etiqueta. Editáveis na nota de Regras, como as conquistas.
+type GoalPeriod = "day" | "week" | "month" | "year";
+type GoalMetric = "xp" | "tasks";
+interface GameGoal {
+  id: string;
+  title: string;
+  period: GoalPeriod;
+  metric: GoalMetric;
+  target: number;
+  project?: string;   // filtro: só conta eventos deste projeto
+  label?: string;     // filtro: só conta eventos com esta etiqueta
+}
+const GOAL_PERIODS: GoalPeriod[] = ["day", "week", "month", "year"];
+const GOAL_PERIOD_LABELS: Record<GoalPeriod, string> = { day: "hoje", week: "esta semana", month: "este mês", year: "este ano" };
+const DEFAULT_GOALS: GameGoal[] = [
+  { id: "dia-xp",      title: "Meta diária",      period: "day",  metric: "xp",    target: 30 },
+  { id: "semana-vol",  title: "Semana produtiva", period: "week", metric: "tasks", target: 20 },
+];
+// Início (YYYY-MM-DD local) do período atual. Semana = segunda-feira (ISO).
+function periodStartKey(period: GoalPeriod, now: Date): string {
+  const d = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+  if (period === "week") { const dow = (d.getDay() + 6) % 7; d.setDate(d.getDate() - dow); }
+  else if (period === "month") d.setDate(1);
+  else if (period === "year") d.setMonth(0, 1);
+  return toKey(d);
+}
+interface GoalState { goal: GameGoal; current: number; pct: number; done: boolean }
+// Progresso de uma meta no período atual: soma de XP "feito" ou contagem de "feito", com filtro de escopo.
+function goalProgress(events: GameEvent[], goal: GameGoal, now: Date): GoalState {
+  const start = periodStartKey(goal.period, now);
+  let current = 0;
+  for (const e of events) {
+    if (e.type !== "feito" || e.date < start) continue;
+    if (goal.project && (e.project || "") !== goal.project) continue;
+    if (goal.label && !e.labels.includes(goal.label)) continue;
+    current += goal.metric === "tasks" ? 1 : e.xp;
+  }
+  current = Math.max(0, current);
+  const pct = goal.target > 0 ? Math.min(100, Math.round(current / goal.target * 100)) : 0;
+  return { goal, current, pct, done: current >= goal.target };
+}
+
+// ── Regras do jogo (configuração declarativa unificada) ──────────────────────
+// Uma nota só (settings.gameRulesPath, bloco ```json) define o "jogo": projetos, etiquetas,
+// XP por prioridade/etiqueta, curva/tabela de níveis e conquistas. Editável/partilhável pela comunidade.
+interface RulesLabel { name: string; color?: string }   // color = nome de paleta do Todoist
+// Nível de um escopo: tabela explícita de limiares OU curva (fórmula + nº de níveis).
+type ScopeLevelDef =
+  | { kind: "table"; thresholds: number[] }
+  | { kind: "curve"; levels: number; curve: string };
+interface ScopeLevels { projects: Map<string, ScopeLevelDef>; labels: Map<string, ScopeLevelDef> }
+type XpByPriority = Record<PriKey, number>;
+interface GameRules {
+  projects: string[];           // projetos a provisionar no Todoist
+  labels: RulesLabel[];         // etiquetas a provisionar no Todoist
+  xpByPriority: XpByPriority;    // XP por prioridade (p1 mais alta)
+  xpByLabel: Map<string, number>; // bônus de XP por etiqueta (somado à prioridade; pode ser negativo)
+  levelCurve: string;           // fórmula do XP cumulativo do nível n (padrão de todos os escopos)
+  scopeLevels: ScopeLevels;     // override de níveis por projeto/etiqueta
+  achievements: Achievement[];  // badges (cai nos padrões se vazio)
+  goals: GameGoal[];            // metas por período (cai nos padrões se vazio)
+}
+const MAX_SCOPE_LEVELS = 1000;  // limite sensato de níveis gerados por fórmula num escopo
+function emptyScopeLevels(): ScopeLevels { return { projects: new Map(), labels: new Map() }; }
+function defaultRules(): GameRules {
+  return { projects: [], labels: [], xpByPriority: { ...DEFAULT_XP_BY_PRI }, xpByLabel: new Map(),
+    levelCurve: DEFAULT_LEVEL_CURVE, scopeLevels: emptyScopeLevels(), achievements: DEFAULT_ACHIEVEMENTS, goals: DEFAULT_GOALS };
+}
+
+// Valida um array cru de conquistas (id único, título, goal > 0, metric conhecido). Inválidas → descartadas.
+function parseAchievementList(raw: unknown): Achievement[] {
+  if (!Array.isArray(raw)) return [];
+  const out: Achievement[] = [];
+  const seen = new Set<string>();
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    const id = typeof o.id === "string" ? o.id.trim() : "";
+    const title = typeof o.title === "string" ? o.title.trim() : "";
+    const metric = typeof o.metric === "string" ? o.metric : "";
+    const goal = Number(o.goal);
+    if (!id || seen.has(id) || !title || !(metric in METRICS) || !Number.isFinite(goal) || goal <= 0) continue;
+    seen.add(id);
+    out.push({
+      id, title, metric: metric as MetricId, goal,
+      cat: typeof o.cat === "string" && o.cat.trim() ? o.cat.trim() : "Outros",
+      desc: typeof o.desc === "string" ? o.desc : "",
+      icon: typeof o.icon === "string" && o.icon.trim() ? o.icon.trim() : "trophy",
+    });
+  }
+  return out;
+}
+// Lê a definição de níveis de UM escopo: array/`thresholds` = tabela (XP cumulativo por nível, crescente);
+// `{ levels, curve }` = fórmula. Inválida → null (usa a curva padrão).
+function parseScopeLevelDef(raw: unknown): ScopeLevelDef | null {
+  const asTable = (arr: unknown[]): ScopeLevelDef | null => {
+    const t = [...new Set(arr.map(Number).filter(n => Number.isFinite(n) && n > 0))].sort((a, b) => a - b);
+    return t.length ? { kind: "table", thresholds: t } : null;
+  };
+  if (Array.isArray(raw)) return asTable(raw);
+  if (raw && typeof raw === "object") {
+    const o = raw as Record<string, unknown>;
+    if (Array.isArray(o.thresholds)) return asTable(o.thresholds);
+    const levels = Math.floor(Number(o.levels));
+    const curve = typeof o.curve === "string" ? o.curve.trim() : "";
+    if (Number.isFinite(levels) && levels >= 1 && levels <= MAX_SCOPE_LEVELS && curve && compileFormula(curve, ["n"]))
+      return { kind: "curve", levels, curve };
+  }
+  return null;
+}
+function parseScopeLevelMap(raw: unknown): Map<string, ScopeLevelDef> {
+  const m = new Map<string, ScopeLevelDef>();
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return m;
+  for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+    const name = k.trim();
+    const def = parseScopeLevelDef(v);
+    if (name && def) m.set(name, def);
+  }
+  return m;
+}
+function parseScopeLevels(raw: unknown): ScopeLevels {
+  const o = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+  return { projects: parseScopeLevelMap(o.projects), labels: parseScopeLevelMap(o.labels) };
+}
+// XP por prioridade: aceita p1..p4 ≥ 0; o que faltar fica no padrão.
+function parseXpByPriority(raw: unknown): XpByPriority {
+  const out: XpByPriority = { ...DEFAULT_XP_BY_PRI };
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    const o = raw as Record<string, unknown>;
+    for (const k of ["p1", "p2", "p3", "p4"] as PriKey[]) {
+      const n = Number(o[k]);
+      if (Number.isFinite(n) && n >= 0) out[k] = n;
+    }
+  }
+  return out;
+}
+// Bônus de XP por etiqueta (somado ao da prioridade; pode ser negativo).
+function parseXpByLabel(raw: unknown): Map<string, number> {
+  const m = new Map<string, number>();
+  if (raw && typeof raw === "object" && !Array.isArray(raw)) {
+    for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
+      const name = k.trim(); const n = Number(v);
+      if (name && Number.isFinite(n)) m.set(name, n);
+    }
+  }
+  return m;
+}
+// Curva padrão (fórmula em n): validada por compileFormula; inválida → curva embutida.
+function parseLevelCurve(raw: unknown): string {
+  if (typeof raw === "string" && raw.trim() && compileFormula(raw.trim(), ["n"])) return raw.trim();
+  return DEFAULT_LEVEL_CURVE;
+}
+// Lê os nomes de projeto (strings únicas, não-vazias).
+function parseRulesProjects(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const out: string[] = [];
+  const seen = new Set<string>();
+  for (const r of raw) {
+    const name = typeof r === "string" ? r.trim() : "";
+    if (!name || seen.has(name)) continue;
+    seen.add(name); out.push(name);
+  }
+  return out;
+}
+// Lê as etiquetas: "nome" ou { name, color }. Cor só se for um nome de paleta do Todoist válido.
+function parseRulesLabels(raw: unknown): RulesLabel[] {
+  if (!Array.isArray(raw)) return [];
+  const out: RulesLabel[] = [];
+  const seen = new Set<string>();
+  for (const r of raw) {
+    let name = "", color: string | undefined;
+    if (typeof r === "string") name = r.trim();
+    else if (r && typeof r === "object") {
+      const o = r as Record<string, unknown>;
+      name = typeof o.name === "string" ? o.name.trim() : "";
+      if (typeof o.color === "string" && o.color.trim() in TODOIST_COLORS) color = o.color.trim();
+    }
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(color ? { name, color } : { name });
+  }
+  return out;
+}
+// Valida um array cru de metas (id único, título, período/métrica conhecidos, target > 0). Inválidas → descartadas.
+function parseGoals(raw: unknown): GameGoal[] {
+  if (!Array.isArray(raw)) return [];
+  const out: GameGoal[] = [];
+  const seen = new Set<string>();
+  for (const r of raw) {
+    if (!r || typeof r !== "object") continue;
+    const o = r as Record<string, unknown>;
+    const id = typeof o.id === "string" ? o.id.trim() : "";
+    const title = typeof o.title === "string" ? o.title.trim() : "";
+    const period = typeof o.period === "string" ? o.period : "";
+    const metric = typeof o.metric === "string" ? o.metric : "";
+    const target = Number(o.target);
+    if (!id || seen.has(id) || !title || !GOAL_PERIODS.includes(period as GoalPeriod)
+      || (metric !== "xp" && metric !== "tasks") || !Number.isFinite(target) || target <= 0) continue;
+    seen.add(id);
+    const g: GameGoal = { id, title, period: period as GoalPeriod, metric: metric as GoalMetric, target };
+    if (typeof o.project === "string" && o.project.trim()) g.project = o.project.trim();
+    if (typeof o.label === "string" && o.label.trim()) g.label = o.label.trim();
+    out.push(g);
+  }
+  return out;
+}
+// Lê o 1º bloco ```json da nota de Regras. Aceita o objeto completo ou, por retrocompat, um array
+// (= só conquistas). Sem bloco válido → null (usa os padrões embutidos).
+function parseGameRules(content: string): GameRules | null {
+  const m = content.match(/```json\s*\r?\n([\s\S]*?)```/);
+  if (!m) return null;
+  let raw: unknown;
+  try { raw = JSON.parse(m[1]); } catch { return null; }
+  if (Array.isArray(raw)) {
+    const ach = parseAchievementList(raw);
+    if (!ach.length) return null;
+    const r = defaultRules(); r.achievements = ach; return r;
+  }
+  if (!raw || typeof raw !== "object") return null;
+  const o = raw as Record<string, unknown>;
+  const ach = parseAchievementList(o.achievements);
+  const goals = parseGoals(o.goals);
+  return {
+    projects: parseRulesProjects(o.projects),
+    labels: parseRulesLabels(o.labels),
+    xpByPriority: parseXpByPriority(o.xpByPriority),
+    xpByLabel: parseXpByLabel(o.xpByLabel),
+    levelCurve: parseLevelCurve(o.levelCurve),
+    scopeLevels: parseScopeLevels(o.scopeLevels),
+    achievements: ach.length ? ach : DEFAULT_ACHIEVEMENTS,   // identidade preservada → isCustomAchievements()
+    goals: goals.length ? goals : DEFAULT_GOALS,
+  };
+}
+function scopeLevelDefToJson(def: ScopeLevelDef): unknown {
+  return def.kind === "table" ? { thresholds: def.thresholds } : { levels: def.levels, curve: def.curve };
+}
+// Objeto JSON canônico das Regras (mesma forma que o parser lê) — reusado pelo builder e pela edição cirúrgica.
+function rulesToJsonObj(rules: GameRules): Record<string, unknown> {
+  const lvlMap = (m: Map<string, ScopeLevelDef>) => Object.fromEntries([...m].map(([k, v]) => [k, scopeLevelDefToJson(v)]));
+  return {
+    projects: rules.projects,
+    labels: rules.labels,
+    xpByPriority: rules.xpByPriority,
+    xpByLabel: Object.fromEntries(rules.xpByLabel),
+    levelCurve: rules.levelCurve,
+    scopeLevels: { projects: lvlMap(rules.scopeLevels.projects), labels: lvlMap(rules.scopeLevels.labels) },
+    achievements: rules.achievements.map(a => ({ id: a.id, cat: a.cat, title: a.title, desc: a.desc, icon: a.icon, metric: a.metric, goal: a.goal })),
+    goals: rules.goals.map(g => ({ id: g.id, title: g.title, period: g.period, metric: g.metric, target: g.target,
+      ...(g.project ? { project: g.project } : {}), ...(g.label ? { label: g.label } : {}) })),
+  };
+}
+// Troca o corpo do 1º bloco ```json preservando o resto da nota (prosa do usuário). null se não houver bloco.
+function replaceFirstJsonBlock(content: string, json: string): string | null {
+  if (!/```json\s*\r?\n[\s\S]*?```/.test(content)) return null;
+  return content.replace(/```json\s*\r?\n[\s\S]*?```/, () => "```json\n" + json + "\n```");
+}
+// Conteúdo inicial da nota (auto-documentada): referência completa de cada campo + tabelas + o JSON atual.
+function buildGameRulesContent(rules: GameRules): string {
+  const rows = (Object.keys(METRIC_LABELS) as MetricId[]).map(k => `| \`${k}\` | ${METRIC_LABELS[k]} |`).join("\n");
+  const colors = Object.keys(TODOIST_COLORS).join(", ");
+  const json = JSON.stringify(rulesToJsonObj(rules), null, 2);
+  return [
+    "---", "owner: Werus", "permissions:", "  read: [all]", "  write:", "    - Werus", "    - Claude",
+    "reviewed: false", "type: reference", "tags: [gamificacao, regras]", "---", "",
+    "# Gamificação — Regras (configuração)", "",
+    "> Arquivo **lido pelo plugin Werus Dashboard**. Edite o bloco `json` no fim e recarregue (Ctrl+R).",
+    "> Bloco vazio/inválido → o plugin usa os padrões embutidos. **Compartilhe esta nota** para distribuir",
+    "> um \"jogo\" inteiro (projetos, etiquetas, XP, níveis, conquistas e metas).", "",
+    "## Como funciona", "",
+    "- **XP por tarefa** = `xpByPriority[prioridade]` + soma dos `xpByLabel` das etiquetas da tarefa (mínimo 0).",
+    "- **\"Salvar concluídas\"** (aba Gamificação) registra as tarefas feitas no log e dá o XP; o botão **✗ não feita** desconta (penalidade nas Configurações).",
+    "- **Nível** = derivado do XP acumulado pela curva `levelCurve` (geral) ou pela definição do escopo em `scopeLevels`.",
+    "- A aba mostra: nível geral, **metas** do período, gráfico de XP, **escopos** (projetos/etiquetas) e **conquistas**.",
+    "- Toda entrada inválida é **ignorada** (o resto continua valendo). O lápis (✏️) na aba abre esta nota.", "",
+    "## Campos do JSON", "",
+    "### `projects` — lista de texto", "",
+    "Nomes dos projetos do jogo. O botão **Provisionar Todoist** (Configurações) cria no Todoist os que faltam; na aba, um escopo que só existe no Todoist ganha o botão **+ Cofre** para entrar aqui.",
+    "Ex.: `[\"Estudos\", \"Trabalho\"]`", "",
+    "### `labels` — lista", "",
+    "Etiquetas do jogo. Cada item é `\"nome\"` **ou** `{ \"name\": \"nome\", \"color\": \"blue\" }` (a cor é usada ao criar no Todoist).",
+    "Cores válidas: " + colors + ".",
+    "Ex.: `[{ \"name\": \"foco\", \"color\": \"blue\" }, \"urgente\"]`", "",
+    "### `xpByPriority` — objeto", "",
+    "XP ganho por prioridade da tarefa (`p1` = mais alta/urgente … `p4` = padrão). O que faltar usa o padrão `p1 8 · p2 5 · p3 3 · p4 1`. Valores ≥ 0.",
+    "Ex.: `{ \"p1\": 10, \"p2\": 5, \"p3\": 3, \"p4\": 1 }`", "",
+    "### `xpByLabel` — objeto", "",
+    "Bônus de XP **somado** por etiqueta presente na tarefa (pode ser negativo para penalizar). Etiquetas fora da lista somam 0.",
+    "Ex.: `{ \"foco\": 2, \"chato\": -3 }` → uma `p1` com `@foco` rende `8 + 2 = 10` XP.", "",
+    "### `levelCurve` — texto (fórmula)", "",
+    "Fórmula do XP **cumulativo** para alcançar o nível `n`. Vale para o nível **geral** e para qualquer escopo sem entrada em `scopeLevels`.",
+    "- Variável: `n` (número do nível, ≥ 1). Operadores: `+` `-` `*` `/` `%` `^` (potência) e parênteses `( )`.",
+    "- Padrão `100 * n^2` (equivale ao antigo ⌊√(XP/100)⌋, **sem teto**).",
+    "- O nível é o **maior `n`** cujo limiar é `≤` ao XP acumulado. Com `100*n^2`: 100 XP → Nv 1, 400 → Nv 2, 900 → Nv 3.",
+    "Ex.: `\"50 * n\"` (linear) · `\"100 * n^1.5\"` · `\"200 + 50 * n^2\"`.", "",
+    "### `scopeLevels` — objeto", "",
+    "Níveis **próprios** por projeto/etiqueta (sobrepõem `levelCurve`). Dois sub-objetos, `projects` e `labels`, mapeando nome → definição. Duas formas:",
+    "- **Fórmula com teto:** `{ \"levels\": 100, \"curve\": \"50 * n\" }` — gera 100 níveis pela fórmula; o nível 100 é o teto.",
+    "- **Tabela explícita:** `{ \"thresholds\": [30, 80, 150, 250] }` — XP cumulativo de cada nível (em ordem crescente). Aqui o escopo tem 4 níveis. No teto, a barra fica cheia e o escopo mostra **\"máx\"**.",
+    "Ex.:",
+    "```",
+    "\"scopeLevels\": {",
+    "  \"projects\": { \"Estudos\": { \"thresholds\": [30, 80, 150, 250] } },",
+    "  \"labels\":   { \"foco\": { \"levels\": 10, \"curve\": \"50 * n\" } }",
+    "}",
+    "```", "",
+    "### `achievements` — lista de badges (permanentes)", "",
+    "| campo | o quê |", "|---|---|",
+    "| `id` | identificador único |",
+    "| `title` | nome exibido |",
+    "| `desc` | descrição (tooltip) |",
+    "| `icon` | ícone **Lucide** (ex.: `star`, `flame`, `trophy`, `medal`, `crown`, `zap`, `sun`, `folder`, `tag`) — ver lucide.dev |",
+    "| `cat` | categoria (vira cabeçalho na UI) |",
+    "| `metric` | o que mede (tabela de métricas abaixo) |",
+    "| `goal` | desbloqueia quando a métrica ≥ goal (fica permanente) |",
+    "Ex.: `{ \"id\":\"lvl5\", \"cat\":\"Nível\", \"title\":\"Aprendiz\", \"desc\":\"Alcance o nível 5\", \"icon\":\"star\", \"metric\":\"level\", \"goal\":5 }`",
+    "Lista vazia → usa as conquistas padrão embutidas.", "",
+    "**Métricas disponíveis (para `achievements`):**", "", "| metric | mede |", "|---|---|", rows, "",
+    "### `goals` — metas do período (resetam sozinhas)", "",
+    "O progresso vem das tarefas **feitas** no período atual; ao virar o período, recomeça.",
+    "| campo | o quê |", "|---|---|",
+    "| `id` | identificador único |",
+    "| `title` | nome exibido |",
+    "| `period` | `day` (hoje) · `week` (semana, começa na segunda) · `month` (mês) · `year` (ano) |",
+    "| `metric` | `xp` (soma de XP) ou `tasks` (nº de tarefas concluídas) |",
+    "| `target` | alvo a alcançar (> 0) |",
+    "| `project` | _(opcional)_ conta só tarefas deste projeto |",
+    "| `label` | _(opcional)_ conta só tarefas com esta etiqueta |",
+    "Ex.: `{ \"id\":\"foco-sem\", \"title\":\"Foco da semana\", \"period\":\"week\", \"metric\":\"tasks\", \"target\":10, \"label\":\"foco\" }`",
+    "Lista vazia → usa as metas padrão embutidas.", "",
+    "## Observações", "",
+    "- O XP de tarefas **já registradas** no log não muda ao alterar `xpByPriority`/`xpByLabel` (o XP é carimbado na hora da conclusão); a mudança vale para as próximas.",
+    "- A sintaxe de fórmula é aritmética **segura** (sem código executável): apenas `n`, números e `+ - * / % ^ ( )`.",
+    "- Penalidades (\"não feita\") **não** contam para as metas.", "",
+    "## Configuração atual", "",
+    "```json", json, "```", "",
+  ].join("\n");
 }
 
 // Data de vencimento (YYYY-MM-DD) de uma tarefa, ou null se sem due.
@@ -1017,6 +1610,7 @@ class TodoistController {
   // Nomes de projetos/etiquetas que existem hoje no Todoist (para sinalizar os que sumiram).
   knownProjects(): Set<string> { return new Set(this.projectMap.values()); }
   knownLabels(): Set<string> { return new Set(this.labelColors.keys()); }
+  hasData(): boolean { return this.fetchedAt > 0; }   // já houve um fetch (online) → known* confiáveis
 
   private dayRange(): 3 | 7 {
     return this.plugin.settings.todoistDayRange === 3 ? 3 : 7;
@@ -1593,11 +2187,13 @@ function isRecurringCompleted(t: TodoistTask): boolean {
 class GameController {
   private events: GameEvent[] = [];
   private loaded = false;
+  private rules: GameRules | null = null;   // regras vindas da nota (null = padrões embutidos)
   private busy = false;                 // colheita/markUndone em andamento
   private pending: TodoistTask[] = [];  // concluídas na API ainda não no log (live)
   private pendingXp = 0;
   private lastBarPct = 0;               // último % da barra (p/ animar do valor anterior)
   private lastLevel = 0;
+  private newAch = new Set<string>();   // conquistas recém-desbloqueadas (mostra "novo!" até a aba ser vista)
   private subs = new Set<() => void>();
 
   constructor(private app: App, private plugin: WerusDashboard) {}
@@ -1609,14 +2205,68 @@ class GameController {
     const f = this.app.vault.getAbstractFileByPath(GAME_LOG_PATH);
     return f instanceof TFile ? f : null;
   }
+  private rulesPath(): string { return this.plugin.settings.gameRulesPath; }
   invalidate() { this.loaded = false; }
   async ensureLoaded() {
     if (this.loaded) return;
     const f = this.logFile();
     this.events = f ? parseGameLog(await this.app.vault.read(f)) : [];
+    let cf = this.app.vault.getAbstractFileByPath(this.rulesPath());
+    // Migração 1x: nota antiga só-de-conquistas → lê como Regras (mesmo parser aceita o array legado).
+    if (!(cf instanceof TFile)) cf = this.app.vault.getAbstractFileByPath(LEGACY_ACH_PATH);
+    this.rules = cf instanceof TFile ? parseGameRules(await this.app.vault.read(cf)) : null;
     this.loaded = true;
   }
-  stats(): GameStats { return computeGameStats(this.events); }
+  // Lista efetiva de conquistas: a da nota do cofre (se válida), senão a padrão embutida.
+  achievements(): Achievement[] { return this.rules?.achievements ?? DEFAULT_ACHIEVEMENTS; }
+  isCustomAchievements(): boolean { return !!this.rules && this.rules.achievements !== DEFAULT_ACHIEVEMENTS; }
+  goals(): GameGoal[] { return this.rules?.goals ?? DEFAULT_GOALS; }
+  // XP de uma tarefa: prioridade + Σ(bônus das etiquetas). Clampa ≥ 0 (config é responsável).
+  taskXp(t: TodoistTask): number {
+    const xpPri = this.rules?.xpByPriority ?? DEFAULT_XP_BY_PRI;
+    const xpLab = this.rules?.xpByLabel;
+    let xp = xpPri[priKey(t.priority)] ?? 0;
+    if (xpLab) for (const l of t.labels ?? []) xp += xpLab.get(l) ?? 0;
+    return Math.max(0, xp);
+  }
+  // Projetos/etiquetas declarados nas Regras (para o botão Provisionar Todoist).
+  provisionLists(): { projects: string[]; labels: RulesLabel[] } {
+    return { projects: this.rules?.projects ?? [], labels: this.rules?.labels ?? [] };
+  }
+  // Abre a nota de Regras (cria, já preenchida com os padrões, se ainda não existir).
+  async openGameRules() {
+    const path = this.rulesPath();
+    let f = this.app.vault.getAbstractFileByPath(path);
+    if (!(f instanceof TFile)) {
+      const slash = path.lastIndexOf("/");
+      const folder = slash > 0 ? path.slice(0, slash) : "";
+      if (folder && !this.app.vault.getAbstractFileByPath(folder)) {
+        try { await this.app.vault.createFolder(folder); } catch { /* já existe */ }
+      }
+      await this.ensureLoaded();   // semeia com as regras vigentes (migra a nota antiga, se houver)
+      f = await this.app.vault.create(path, buildGameRulesContent(this.rules ?? defaultRules()));
+      this.invalidate(); await this.ensureLoaded(); this.rerenderAll();   // passa a ler do novo caminho
+    }
+    if (f instanceof TFile) await this.app.workspace.getLeaf(false).openFile(f);
+  }
+  // Reescreve a nota com a documentação completa, mantendo a configuração (o JSON). Se não existir, cria.
+  async regenerateRulesDoc() {
+    const path = this.rulesPath();
+    const f = this.app.vault.getAbstractFileByPath(path);
+    if (!(f instanceof TFile)) { await this.openGameRules(); return; }
+    const rules = parseGameRules(await this.app.vault.read(f)) ?? defaultRules();
+    const ok = await confirmModal(this.app, {
+      title: "Regenerar documentação?",
+      body: "Reescreve a nota de Regras com a documentação completa, mantendo a sua configuração (o JSON). Texto adicionado à mão na nota será perdido.",
+      cta: "Regenerar",
+    });
+    if (!ok) return;
+    await this.app.vault.modify(f, buildGameRulesContent(rules));
+    this.invalidate(); await this.ensureLoaded(); this.rerenderAll();
+    await this.app.workspace.getLeaf(false).openFile(f);
+    new Notice("Documentação das Regras atualizada (configuração preservada).");
+  }
+  stats(): GameStats { return computeGameStats(this.events, this.rules ?? undefined); }
 
   private async writeLog() {
     const content = buildGameLogContent(this.events);
@@ -1647,8 +2297,8 @@ class GameController {
   }
   private doneEvent(t: TodoistTask): GameEvent {
     const at = t.completed_at ?? new Date().toISOString();
-    return { date: toKey(new Date(at)), type: "feito", xp: xpForPriority(t.priority),
-      key: `${t.id}|${at}`, content: t.content, project: this.projName(t), labels: t.labels ?? [] };
+    return { date: toKey(new Date(at)), type: "feito", xp: this.taskXp(t),
+      key: `${t.id}|${at}`, content: t.content, project: this.projName(t), labels: t.labels ?? [], pri: t.priority };
   }
 
   // Janela do fetch: desde a última colheita (−2d de margem) ou backfill na 1ª vez.
@@ -1667,7 +2317,7 @@ class GameController {
     if (this.busy) return;
     const token = this.plugin.settings.todoistToken.trim();
     if (!token) { new Notice("Configure o token do Todoist."); return; }
-    const penalty = Math.max(1, Math.round(xpForPriority(t.priority) * this.plugin.settings.gamePenaltyFactor));
+    const penalty = Math.max(1, Math.round(this.taskXp(t) * this.plugin.settings.gamePenaltyFactor));
     const recurring = isRecurringCompleted(t);
     const ok = await confirmModal(this.app, {
       title: "Marcar como não feita?",
@@ -1680,7 +2330,7 @@ class GameController {
     this.busy = true; this.rerenderAll();
     try {
       await this.appendEvents([{ date: toKey(new Date()), type: "nao-feito", xp: -penalty,
-        key: `${t.id}|${Date.now()}`, content: t.content, project: this.projName(t), labels: t.labels ?? [] }]);
+        key: `${t.id}|${Date.now()}`, content: t.content, project: this.projName(t), labels: t.labels ?? [], pri: t.priority }]);
       if (!recurring) await deleteTodoistTask(token, t.id);
       new Notice(`✗ Não feita: ${t.content} (−${penalty} XP)`);
       await this.plugin.todo.fetch(true);
@@ -1711,12 +2361,12 @@ class GameController {
       }
       const deletable = fresh.filter(t => !isRecurringCompleted(t));
       const recurring = fresh.length - deletable.length;
-      const totalXp = fresh.reduce((s, t) => s + xpForPriority(t.priority), 0);
+      const totalXp = fresh.reduce((s, t) => s + this.taskXp(t), 0);
       const ok = await confirmModal(this.app, {
         title: `Salvar ${fresh.length} tarefa(s) concluída(s)?`,
         body: `+${totalXp} XP no log. ${deletable.length} apagada(s) do Todoist` +
           (recurring ? ` · ${recurring} recorrente(s) ficam (apagar quebraria a recorrência).` : "."),
-        items: fresh.slice(0, 30).map(t => ({ text: `+${xpForPriority(t.priority)} · ${t.content}` })),
+        items: fresh.slice(0, 30).map(t => ({ text: `+${this.taskXp(t)} · ${t.content}` })),
         cta: `Salvar e apagar ${deletable.length}`,
       });
       if (!ok) return;
@@ -1745,7 +2395,7 @@ class GameController {
       const completed = await fetchCompletedTasks(token, this.harvestSince(), this.harvestUntil());
       const keys = new Set(this.events.map(e => e.key));
       this.pending = completed.filter(t => !keys.has(`${t.id}|${t.completed_at ?? ""}`));
-      this.pendingXp = this.pending.reduce((s, t) => s + xpForPriority(t.priority), 0);
+      this.pendingXp = this.pending.reduce((s, t) => s + this.taskXp(t), 0);
       this.rerenderAll();
     } catch { /* silencioso */ }
   }
@@ -1753,6 +2403,7 @@ class GameController {
   // Painel compartilhado: dashboard (faixa, ctrls sem colheita) e aba (full).
   renderPanel(host: HTMLElement, ctrls: HTMLElement | null, opts: { full?: boolean; phone?: boolean } = {}) {
     const s = this.stats();
+    this.syncAchievements(s);   // detecta/persiste desbloqueios mesmo só com a faixa do dashboard aberta
     const token = this.plugin.settings.todoistToken.trim();
     if (opts.full && ctrls && token) {
       const save = ctrls.createSpan({ cls: "wd-game-harvest" + (this.busy ? " wd-game-busy" : "") });
@@ -1795,45 +2446,222 @@ class GameController {
       host.createDiv({ cls: "wd-game-hint", text:
         `${this.pending.length} concluída(s) aguardando salvar (+${this.pendingXp} XP) — clique em "Salvar concluídas".` });
 
+    if (opts.full) this.renderGoals(host);
     if (opts.full) this.renderXpChart(host, s, !!opts.phone);
-    if (opts.full) this.renderScopeLevels(host, s);
+    if (opts.full) this.renderXpFormula(host);
+    if (opts.full) this.renderScopes(host, s);
+    if (opts.full) this.renderAchievements(host, s);
   }
 
-  // Níveis por escopo (projeto/etiqueta): top por XP, cada um com nível + mini-barra.
-  // Reusa a barra de XP (`.wd-game-bar`) e `levelInfo(xp)`.
-  private renderScopeLevels(host: HTMLElement, s: GameStats) {
-    const TOP = 8;
-    const section = (title: string, data: Map<string, number>, prefix: string, renameEmpty: string | undefined, known: Set<string>) => {
-      const top = [...data.entries()]
-        .filter(([, xp]) => xp > 0)
-        .sort((a, b) => b[1] - a[1])
-        .slice(0, TOP);
-      if (!top.length) return;
-      // Só avisa "não existe mais" se o Todoist já carregou os escopos atuais (offline/sem token → sem aviso).
-      const ready = known.size > 0;
-      const sec = host.createDiv({ cls: "wd-game-scopesec" });
-      sec.createDiv({ cls: "wd-game-chart-title", text: title });
-      for (const [name, xp] of top) {
-        const li = levelInfo(xp);
-        const gone = ready && name !== "—" && !known.has(name);
-        const item = sec.createDiv({ cls: "wd-game-scope-item" });
-        const head = item.createDiv({ cls: "wd-game-scope-head" });
-        const left = head.createDiv({ cls: "wd-game-scope-left" });
-        left.createSpan({ cls: "wd-game-scope-name" + (gone ? " wd-dim" : ""),
-          text: prefix + (renameEmpty && name === "—" ? renameEmpty : name) });
-        if (gone) {
-          const g = left.createSpan({ cls: "wd-game-scope-gone" });
-          setIcon(g, "unlink");
-          g.setAttr("title", "Não existe mais no Todoist");
-        }
-        head.createSpan({ cls: "wd-game-scope-meta", text: `Nv ${li.level} · ${xp} XP` });
-        const bar = item.createDiv({ cls: "wd-game-bar wd-game-bar-mini" });
-        bar.createDiv({ cls: "wd-game-bar-fill" }).style.width = `${li.pct}%`;
-        bar.setAttr("title", `${li.into}/${li.forNext} XP para o nível ${li.level + 1}`);
+  // Metas (só na aba): alvo do período atual, com barra de progresso. Editáveis na nota de Regras.
+  private renderGoals(host: HTMLElement) {
+    const goals = this.goals();
+    if (!goals.length) return;
+    const now = new Date();
+    const sec = host.createDiv({ cls: "wd-game-goalsec" });
+    sec.createDiv({ cls: "wd-game-chart-title", text: "Metas" });
+    for (const g of goals) {
+      const st = goalProgress(this.events, g, now);
+      const item = sec.createDiv({ cls: "wd-game-goal" + (st.done ? " wd-game-goal-done" : "") });
+      const head = item.createDiv({ cls: "wd-game-scope-head" });
+      const left = head.createDiv({ cls: "wd-game-scope-left" });
+      left.createSpan({ cls: "wd-game-scope-name", text: g.title });
+      const scope = g.project ? g.project : g.label ? "@" + g.label : "";
+      left.createSpan({ cls: "wd-game-goal-sub", text: GOAL_PERIOD_LABELS[g.period] + (scope ? " · " + scope : "") });
+      const unit = g.metric === "xp" ? "XP" : "feitas";
+      head.createSpan({ cls: "wd-game-scope-meta", text: `${st.current}/${g.target} ${unit}` + (st.done ? " ✓" : "") });
+      const bar = item.createDiv({ cls: "wd-game-bar wd-game-bar-mini" });
+      bar.createDiv({ cls: "wd-game-bar-fill" }).style.width = `${st.pct}%`;
+      bar.setAttr("title", st.done ? "Meta concluída!" : `${st.current}/${g.target} ${unit} ${GOAL_PERIOD_LABELS[g.period]}`);
+    }
+  }
+
+  // Marca conquistas recém-desbloqueadas: grava a data (permanente) e sinaliza "novo!".
+  private syncAchievements(s: GameStats) {
+    const saved = this.plugin.settings.gameAchievements;
+    let changed = false;
+    for (const a of this.achievements()) {
+      if (!saved[a.id] && metricValue(a.metric, s) >= a.goal) {
+        saved[a.id] = toKey(new Date());
+        this.newAch.add(a.id);
+        changed = true;
       }
-    };
-    section("Níveis por projeto", s.byProject, "", "Sem projeto", this.plugin.todo.knownProjects());
-    section("Níveis por etiqueta", s.byLabel, "@", undefined, this.plugin.todo.knownLabels());
+    }
+    if (changed) void this.plugin.saveSettings();
+  }
+
+  // Conquistas (só na aba): grid de badges — desbloqueadas coloridas + data; bloqueadas
+  // em cinza com a condição e o progresso (decisão do Werus: mostrar bloqueadas).
+  private renderAchievements(host: HTMLElement, s: GameStats) {
+    const list = this.achievements();
+    const states = list.map(a => evalAchievement(a, s));
+    const unlocked = states.filter(x => x.unlocked).length;
+    const sec = host.createDiv({ cls: "wd-game-achsec" });
+    const hd = sec.createDiv({ cls: "wd-game-charthd" });
+    hd.createDiv({ cls: "wd-game-chart-title", text: "Conquistas" });
+    const right = hd.createDiv({ cls: "wd-game-ach-hd-right" });
+    right.createSpan({ cls: "wd-game-ach-count" + (this.isCustomAchievements() ? " wd-game-ach-custom" : ""),
+      text: `${unlocked}/${list.length}` });
+    const edit = right.createSpan({ cls: "wd-view-btn wd-game-ach-edit" });
+    setIcon(edit, "pencil");
+    edit.setAttr("title", "Editar regras — abre a nota com o bloco JSON (projetos, etiquetas, XP, níveis, conquistas)"
+      + (this.isCustomAchievements() ? " (lista personalizada ativa)" : ""));
+    clickable(edit, () => void this.openGameRules());
+    const grid = sec.createDiv({ cls: "wd-game-ach-grid" });
+    for (const st of states) {
+      const date = this.plugin.settings.gameAchievements[st.a.id];
+      const isNew = this.newAch.has(st.a.id);
+      const cell = grid.createDiv({ cls: "wd-game-ach"
+        + (st.unlocked ? " wd-game-ach-on" : "") + (isNew ? " wd-game-ach-new" : "") });
+      setIcon(cell.createDiv({ cls: "wd-game-ach-ico" }), st.a.icon);
+      cell.createDiv({ cls: "wd-game-ach-title", text: st.a.title });
+      if (st.unlocked) {
+        cell.createDiv({ cls: "wd-game-ach-sub", text: date ? `✓ ${date}` : "✓" });
+      } else {
+        cell.createDiv({ cls: "wd-game-ach-sub", text: `${Math.min(st.value, st.a.goal)}/${st.a.goal}` });
+        const bar = cell.createDiv({ cls: "wd-game-bar wd-game-bar-mini" });
+        bar.createDiv({ cls: "wd-game-bar-fill" }).style.width = `${st.pct}%`;
+      }
+      cell.setAttr("title", `${st.a.desc}` + (st.unlocked
+        ? (date ? ` · desbloqueada em ${date}` : " · desbloqueada")
+        : ` · ${Math.min(st.value, st.a.goal)}/${st.a.goal}`));
+      if (isNew) cell.createSpan({ cls: "wd-game-ach-newbadge", text: "novo!" });
+    }
+    this.newAch.clear();   // "novo!" aparece uma vez por visualização da aba
+  }
+
+  // Fórmula visual do XP por tarefa (estilo Notion): prioridade + Σ(etiquetas), com os valores vigentes.
+  private renderXpFormula(host: HTMLElement) {
+    const pri = this.rules?.xpByPriority ?? DEFAULT_XP_BY_PRI;
+    const labs = [...(this.rules?.xpByLabel ?? new Map())].filter(([, v]) => v !== 0);
+    const sec = host.createDiv({ cls: "wd-game-formula" });
+    sec.createSpan({ cls: "wd-game-formula-eq", text: "XP por tarefa = prioridade + Σ etiquetas" });
+    const parts = sec.createDiv({ cls: "wd-game-formula-parts" });
+    const chip = (text: string) => parts.createSpan({ cls: "wd-game-formula-chip", text });
+    chip(`p1 ${pri.p1}`); chip(`p2 ${pri.p2}`); chip(`p3 ${pri.p3}`); chip(`p4 ${pri.p4}`);
+    for (const [name, v] of labs) chip(`@${name} ${v >= 0 ? "+" : ""}${v}`);
+  }
+
+  // Escopos (projetos/etiquetas): lista única com selos de origem (Cofre/Todoist/Hist) + nível,
+  // e botão de ação na divergência (apagar histórico órfão / adicionar ao cofre / adicionar ao Todoist).
+  private renderScopes(host: HTMLElement, s: GameStats) {
+    this.renderScopeSection(host, "Projetos", "project", s.byProject, s.byProjectInfo,
+      new Set(this.rules?.projects ?? []), this.plugin.todo.knownProjects(), "");
+    this.renderScopeSection(host, "Etiquetas", "label", s.byLabel, s.byLabelInfo,
+      new Set((this.rules?.labels ?? []).map(l => l.name)), this.plugin.todo.knownLabels(), "@");
+  }
+  private renderScopeSection(host: HTMLElement, title: string, kind: "project" | "label",
+    xpMap: Map<string, number>, infoMap: Map<string, LevelInfo>,
+    registered: Set<string>, known: Set<string>, prefix: string) {
+    const todoReady = this.plugin.todo.hasData();
+    const names = new Set<string>();
+    for (const n of registered) names.add(n);
+    if (todoReady) for (const n of known) names.add(n);
+    for (const n of xpMap.keys()) if (n !== "—") names.add(n);
+    if (!names.size) return;
+    const rows = [...names].map(name => ({
+      name, xp: xpMap.get(name) ?? 0, info: infoMap.get(name),
+      inCofre: registered.has(name),
+      inTodo: todoReady ? known.has(name) : null as boolean | null,
+      inHist: xpMap.has(name),
+    })).sort((a, b) => (b.xp - a.xp) || a.name.localeCompare(b.name));
+    const sec = host.createDiv({ cls: "wd-game-scopesec" });
+    sec.createDiv({ cls: "wd-game-chart-title", text: title });
+    const noun = kind === "project" ? "projeto" : "etiqueta";
+    for (const r of rows) {
+      const item = sec.createDiv({ cls: "wd-game-scope-item" });
+      const head = item.createDiv({ cls: "wd-game-scope-head" });
+      const left = head.createDiv({ cls: "wd-game-scope-left" });
+      left.createSpan({ cls: "wd-game-scope-name", text: prefix + r.name });
+      const src = left.createDiv({ cls: "wd-scope-srcs" });
+      if (r.inCofre) src.createSpan({ cls: "wd-scope-src wd-scope-src-cofre", text: "Cofre" });
+      if (r.inTodo) src.createSpan({ cls: "wd-scope-src wd-scope-src-todo", text: "Todoist" });
+      if (r.inHist) src.createSpan({ cls: "wd-scope-src wd-scope-src-hist", text: "Hist" });
+      const right = head.createDiv({ cls: "wd-game-scope-right" });
+      if (r.info && r.xp > 0)
+        right.createSpan({ cls: "wd-game-scope-meta", text: `Nv ${r.info.level} · ${r.xp} XP` + (r.info.max ? " · máx" : "") });
+      // Ação por divergência entre Cofre / Todoist / Histórico.
+      let act: { label: string; title: string; danger?: boolean; run: () => Promise<void> } | null = null;
+      if (todoReady && r.inHist && !r.inCofre && r.inTodo === false)
+        act = { label: "Apagar histórico", danger: true, title: `Remove "${r.name}" do histórico de XP (confirma antes)`,
+          run: () => this.clearScopeHistory(kind, r.name) };
+      else if (todoReady && r.inTodo && !r.inCofre)
+        act = { label: "+ Cofre", title: `Adicionar às Regras e abrir para configurar os níveis deste ${noun}`,
+          run: () => this.addScopeToRules(kind, r.name) };
+      else if (r.inCofre && r.inTodo === false)
+        act = { label: "+ Todoist", title: `Criar este ${noun} no Todoist`,
+          run: () => this.addScopeToTodoist(kind, r.name) };
+      if (act) {
+        const btn = right.createSpan({ cls: "wd-view-btn wd-scope-act" + (act.danger ? " wd-scope-act-danger" : "") });
+        btn.setText(act.label); btn.setAttr("title", act.title);
+        const run = act.run;
+        clickable(btn, () => void run());
+      }
+      if (r.info && r.xp > 0) {
+        const bar = item.createDiv({ cls: "wd-game-bar wd-game-bar-mini" });
+        bar.createDiv({ cls: "wd-game-bar-fill" }).style.width = `${r.info.pct}%`;
+        bar.setAttr("title", r.info.max ? "Nível máximo do escopo"
+          : `${r.info.into}/${r.info.forNext} XP para o nível ${r.info.level + 1}`);
+      }
+    }
+  }
+
+  // Limpa um escopo do histórico (projeto → vira "Sem projeto"; etiqueta → removida dos eventos). XP total mantido.
+  async clearScopeHistory(kind: "project" | "label", name: string) {
+    await this.ensureLoaded();
+    const affected = kind === "project"
+      ? this.events.filter(e => (e.project || "—") === name).length
+      : this.events.filter(e => e.labels.includes(name)).length;
+    if (!affected) return;
+    const ok = await confirmModal(this.app, {
+      title: "Apagar do histórico?",
+      body: kind === "project"
+        ? `Remover o projeto "${name}" do histórico (${affected} evento(s) viram "Sem projeto"). O XP total é mantido.`
+        : `Remover a etiqueta "@${name}" do histórico (${affected} evento(s)). O XP total é mantido.`,
+      cta: "Apagar",
+    });
+    if (!ok) return;
+    for (const e of this.events) {
+      if (kind === "project") { if ((e.project || "—") === name) e.project = ""; }
+      else if (e.labels.includes(name)) e.labels = e.labels.filter(l => l !== name);
+    }
+    await this.writeLog();
+    this.rerenderAll();
+    new Notice(`Histórico de "${name}" limpo.`);
+  }
+
+  // Adiciona um escopo às Regras (cofre) e abre a nota para configurar seus níveis.
+  async addScopeToRules(kind: "project" | "label", name: string) {
+    const path = this.rulesPath();
+    let f = this.app.vault.getAbstractFileByPath(path);
+    if (!(f instanceof TFile)) { await this.openGameRules(); f = this.app.vault.getAbstractFileByPath(path); }
+    if (!(f instanceof TFile)) return;
+    const content = await this.app.vault.read(f);
+    const rules = parseGameRules(content) ?? defaultRules();
+    if (kind === "project") { if (!rules.projects.includes(name)) rules.projects.push(name); }
+    else if (!rules.labels.some(l => l.name === name)) rules.labels.push({ name });
+    const json = JSON.stringify(rulesToJsonObj(rules), null, 2);
+    const next = replaceFirstJsonBlock(content, json) ?? buildGameRulesContent(rules);
+    await this.app.vault.modify(f, next);
+    this.invalidate(); await this.ensureLoaded(); this.rerenderAll();
+    await this.app.workspace.getLeaf(false).openFile(f);
+    new Notice(`"${name}" adicionado às Regras — configure os níveis na nota.`);
+  }
+
+  // Cria UM escopo no Todoist (não substitui o "Provisionar" em massa das Configurações).
+  async addScopeToTodoist(kind: "project" | "label", name: string) {
+    const token = this.plugin.settings.todoistToken.trim();
+    if (!token) { new Notice("Configure o token do Todoist."); return; }
+    const color = kind === "label" ? this.rules?.labels.find(l => l.name === name)?.color : undefined;
+    try {
+      if (kind === "project") await createTodoistProject(token, name);
+      else await createTodoistLabel(token, name, color);
+      await this.plugin.todo.fetch(true);   // atualiza knownProjects/knownLabels
+      this.rerenderAll();
+      new Notice(`"${name}" criado no Todoist.`);
+    } catch (e) {
+      new Notice(`Falha: ${e instanceof Error ? e.message : String(e)}`);
+    }
   }
 
   // Gráfico de XP por dia (últimos N dias) — barras ou linha com pontos (settings.gameChartMode).
@@ -2941,7 +3769,9 @@ export default class WerusDashboard extends Plugin {
     });
     // Re-renderiza quando o log muda (inclusive nossas gravações).
     this.registerEvent(this.app.vault.on("modify", f => {
-      if (f.path === GAME_LOG_PATH) { this.game.invalidate(); void this.game.ensureLoaded().then(() => this.game.rerenderAll()); }
+      if (f.path === GAME_LOG_PATH || f.path === this.settings.gameRulesPath || f.path === LEGACY_ACH_PATH) {
+        this.game.invalidate(); void this.game.ensureLoaded().then(() => this.game.rerenderAll());
+      }
     }));
   }
 
@@ -3004,6 +3834,50 @@ export default class WerusDashboard extends Plugin {
     [arr[index], arr[j]] = [arr[j], arr[index]];
     await this.saveSettings();
     this.rerenderDashboards();
+  }
+
+  // Provisiona o Todoist com os projetos/etiquetas declarados nas Regras (cria só os que faltam).
+  // Assim a comunidade escreve as regras do jogo e o jogador só clica para preparar seu Todoist.
+  async provisionTodoist() {
+    const token = this.settings.todoistToken.trim();
+    if (!token) { new Notice("Configure o token do Todoist primeiro."); return; }
+    await this.game.ensureLoaded();
+    const { projects, labels } = this.game.provisionLists();
+    if (!projects.length && !labels.length) {
+      new Notice("As Regras não listam projetos nem etiquetas. Edite a nota de Regras (botão ✏️).");
+      return;
+    }
+    let existProjects: Set<string>, existLabels: Set<string>;
+    try {
+      const [ps, ls] = await Promise.all([fetchTodoistProjects(token), fetchTodoistLabels(token)]);
+      existProjects = new Set(ps.map(p => p.name));
+      existLabels = new Set(ls.map(l => l.name));
+    } catch (e) {
+      new Notice("Falha ao consultar o Todoist: " + (e instanceof Error ? e.message : String(e)));
+      return;
+    }
+    const newProjects = projects.filter(p => !existProjects.has(p));
+    const newLabels = labels.filter(l => !existLabels.has(l.name));
+    if (!newProjects.length && !newLabels.length) {
+      new Notice("Todos os projetos e etiquetas das Regras já existem no Todoist. ✅");
+      return;
+    }
+    const items: ConfirmItem[] = [
+      ...newProjects.map(p => ({ text: `📁 ${p}` })),
+      ...newLabels.map(l => ({ text: `🏷️ ${l.name}` })),
+    ];
+    const ok = await confirmModal(this.app, {
+      title: "Provisionar Todoist",
+      body: `Criar ${newProjects.length} projeto(s) e ${newLabels.length} etiqueta(s) no Todoist?`,
+      items,
+      cta: "Criar",
+    });
+    if (!ok) return;
+    let done = 0, failed = 0;
+    for (const p of newProjects) { try { await createTodoistProject(token, p); done++; } catch { failed++; } }
+    for (const l of newLabels) { try { await createTodoistLabel(token, l.name, l.color); done++; } catch { failed++; } }
+    this.todo.reset();   // recarrega projetos/etiquetas no controller (atualiza knownProjects/knownLabels)
+    new Notice(`Provisionamento: ${done} criado(s)` + (failed ? `, ${failed} falha(s)` : "") + ".");
   }
 
   async loadSettings() {
@@ -3071,6 +3945,10 @@ export default class WerusDashboard extends Plugin {
     this.settings.gameLastHarvest = typeof this.settings.gameLastHarvest === "string" ? this.settings.gameLastHarvest : "";
     this.settings.gameChartMode = this.settings.gameChartMode === "line" ? "line" : "bars";
     this.settings.growthChartMode = this.settings.growthChartMode === "line" ? "line" : "bars";
+    const ga = this.settings.gameAchievements;
+    this.settings.gameAchievements = ga && typeof ga === "object" && !Array.isArray(ga) ? ga : {};
+    this.settings.gameRulesPath = typeof this.settings.gameRulesPath === "string" && this.settings.gameRulesPath.trim()
+      ? this.settings.gameRulesPath.trim() : DEFAULT_RULES_PATH;
 
     // Migração 1x: grava as credenciais no localStorage e as remove do data.json.
     if (needStMigration) await this.saveSettings();
@@ -3645,6 +4523,34 @@ class WerusSettingTab extends PluginSettingTab {
           const n = Number(v.replace(",", "."));
           if (Number.isFinite(n) && n > 0) { plugin.settings.gamePenaltyFactor = n; await plugin.saveSettings(); }
         }));
+
+    new Setting(containerEl)
+      .setName("Nota de Regras (JSON)")
+      .setDesc("Caminho da nota com as regras do jogo (projetos, etiquetas, XP por prioridade/etiqueta, níveis e conquistas). Mude se o seu cofre não usa o método PARA. O lápis abre — e cria, já preenchida — a nota.")
+      .addText(t => t
+        .setPlaceholder(DEFAULT_RULES_PATH)
+        .setValue(plugin.settings.gameRulesPath)
+        .onChange(async v => {
+          plugin.settings.gameRulesPath = v.trim() || DEFAULT_RULES_PATH;
+          await plugin.saveSettings();
+          plugin.game.invalidate();
+          void plugin.game.ensureLoaded().then(() => plugin.game.rerenderAll());
+        }))
+      .addExtraButton(b => b
+        .setIcon("pencil")
+        .setTooltip("Abrir / criar a nota de Regras")
+        .onClick(() => void plugin.game.openGameRules()))
+      .addExtraButton(b => b
+        .setIcon("book-open")
+        .setTooltip("Regenerar a documentação da nota (mantém a sua configuração)")
+        .onClick(() => void plugin.game.regenerateRulesDoc()));
+
+    new Setting(containerEl)
+      .setName("Provisionar Todoist")
+      .setDesc("Cria no seu Todoist os projetos e etiquetas listados nas Regras (só os que faltam). Útil ao adotar um \"jogo\" feito pela comunidade.")
+      .addButton(b => b
+        .setButtonText("Criar projetos e etiquetas")
+        .onClick(() => void plugin.provisionTodoist()));
 
     // ── Pacotes de tarefas ───────────────────────────────────────────────────
     containerEl.createEl("h3", { text: "Pacotes de tarefas" });
